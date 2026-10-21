@@ -1,6 +1,6 @@
 # Runbook de Lightsail DEV
 
-Este runbook opera la instancia `m2-dev` en `sa-east-1`. El servicio sigue expuesto conscientemente por HTTP: Frontend/Nginx escucha en `80`, Backend sólo en `127.0.0.1:8080` y PostgreSQL únicamente en la red Docker. Flyway aplica migraciones al iniciar Backend; la última migración versionada actual es V41.
+Este runbook opera la instancia `m2-dev` en `sa-east-1` una vez activada la migración HTTPS. Caddy publica TCP 80/443 y proxifica a Nginx :8082 privado; Backend sólo publica `127.0.0.1:8080` y PostgreSQL permanece en Docker. Flyway aplica migraciones al iniciar Backend. Para migrar desde HTTP o revertir infraestructura, usar primero [https.md](https.md); no ejecutar el nuevo script contra el stack HTTP anterior.
 
 Todos los comandos de Compose se ejecutan desde:
 
@@ -33,13 +33,12 @@ docker compose --env-file .env --env-file images.env -f compose.deploy.yml logs 
 
 ```bash
 curl --fail --connect-timeout 3 --max-time 10 http://127.0.0.1:8080/actuator/health
-curl --fail --connect-timeout 3 --max-time 10 http://127.0.0.1/
-curl --fail --connect-timeout 3 --max-time 10 http://127.0.0.1/api/catalog/categories
+bash ../scripts/smoke-https.sh 54-232-233-237.sslip.io 54.232.233.237
 ```
 
 ## Deploy manual por SHA
 
-Usar siempre el SHA completo de 40 caracteres publicado por el workflow. El script toma un lock compartido durante hasta 600 segundos, prepara un `images.env` candidato, hace `pull` y `up -d --no-deps` sólo del servicio elegido y ejecuta los smoke tests. Sólo reemplaza atómicamente `images.env` cuando el despliegue queda sano.
+Usar siempre el SHA completo de 40 caracteres publicado por el workflow. Se requieren `docker`, `flock`, `curl`, `awk`, `mktemp`, `python3` y CA roots del sistema. El script toma un lock compartido durante hasta 600 segundos, respeta el sentinel de mantenimiento, obtiene el hostname mediante Compose sin hacer source del .env y exige un preflight HTTPS sano antes de modificar imágenes. Después prepara un `images.env` candidato, hace `pull` y `up -d --no-deps` sólo del servicio elegido y ejecuta los smoke tests. Sólo reemplaza atómicamente `images.env` cuando el despliegue queda sano. Ambos servicios verifican Backend UP, HTML React y catálogo JSON sobre TLS público confiable, además de redirecciones. Las conexiones HTTPS locales usan `--resolve` a loopback, sin `-k` y sin aceptar 3xx como éxito.
 
 ```bash
 cd /home/ubuntu/DA2/Infra/DA2-m2-infra
@@ -51,7 +50,7 @@ Backend y Frontend usan el mismo lock `/home/ubuntu/DA2/.deploy/m2-deploy.lock`.
 
 ## Rollback
 
-Si un deploy no supera los smoke tests, el script vuelve automáticamente a la imagen anterior registrada, repite `pull`, `up` y smoke, y finaliza con error para dejar visible que el SHA solicitado no se aplicó. Un rollback manual usa exactamente la misma interfaz:
+Si un deploy no supera los smoke tests, el script vuelve automáticamente a la imagen anterior registrada, usa su caché local si existe (sólo hace pull si falta), recrea con `--pull never`, repite smoke y finaliza con error para dejar visible que el SHA solicitado no se aplicó. Así una caída de GHCR no impide recuperar una imagen anterior ya disponible. Un rollback manual usa exactamente la misma interfaz:
 
 ```bash
 cd /home/ubuntu/DA2/Infra/DA2-m2-infra
@@ -61,9 +60,14 @@ bash scripts/deploy-service.sh frontend <FULL_SHA_FRONTEND_ANTERIOR>
 
 El script nunca ejecuta `down`, nunca reinicia PostgreSQL y nunca borra volúmenes.
 
+Los SHAs Frontend anteriores sin el listener 8082 no son compatibles con la nueva
+infraestructura. Conservar un SHA compatible como base de rollback. Un fallo de CA,
+DNS o Caddy requiere diagnóstico/reversión de infraestructura según [https.md](https.md),
+no sólo rollback de imagen. Si falla el preflight, no se intenta un deploy ni rollback.
+
 ## Runtime config
 
-Editar `.env` directamente en el servidor sin imprimir su contenido. Mantener `FRONTEND_PORT=80` y `SIMULATOR_ENABLED=false`. Después de cambiar variables de un servicio, recrear sólo ese servicio:
+Editar `.env` directamente en el servidor sin imprimir su contenido. Mantener `HTTPS_HOSTNAME`, `LEGACY_HTTP_IP` y el proyecto Compose efectivo. Conservar el valor actual de `SIMULATOR_ENABLED` y de las demás variables runtime; HTTPS no debe habilitar ni deshabilitar el simulador. `FRONTEND_PORT` ya no publica el Frontend de deploy. Backend deriva su base pública HTTPS del hostname. Después de cambiar variables de un servicio, recrear sólo ese servicio:
 
 ```bash
 docker compose --env-file .env --env-file images.env -f compose.deploy.yml up -d --no-deps backend
@@ -122,7 +126,7 @@ Agregar como **Repository Secret** `LIGHTSAIL_SSH_PRIVATE_KEY`, usando una clave
 
 Para habilitar CD, establecer `CD_ENABLED=true` en cada repositorio sólo después de probar deploy y rollback manuales. Si falta, está vacía o tiene cualquier otro valor, la publicación GHCR continúa y el job deploy se omite sin fallar el workflow.
 
-Infra actualmente sólo valida Compose y Terraform: no tiene CD, no utiliza `CD_ENABLED` ni `LIGHTSAIL_*` y no requiere Secrets de deployment. Si en el futuro se implementa Infra CD, deberá adoptar la misma convención de Repository Variables (`CD_ENABLED`, `LIGHTSAIL_HOST`, `LIGHTSAIL_USER`, `LIGHTSAIL_DEPLOY_PATH`, `LIGHTSAIL_KNOWN_HOSTS`) y Repository Secret (`LIGHTSAIL_SSH_PRIVATE_KEY`), sin depender de GitHub Environments.
+Infra valida Compose, Caddyfile, Bash, pruebas de smoke/rollback y Terraform: no tiene CD, no utiliza `CD_ENABLED` ni `LIGHTSAIL_*` y no requiere Secrets de deployment. Frontend además valida Nginx. Si en el futuro se implementa Infra CD, deberá adoptar la misma convención de Repository Variables (`CD_ENABLED`, `LIGHTSAIL_HOST`, `LIGHTSAIL_USER`, `LIGHTSAIL_DEPLOY_PATH`, `LIGHTSAIL_KNOWN_HOSTS`) y Repository Secret (`LIGHTSAIL_SSH_PRIVATE_KEY`), sin depender de GitHub Environments.
 
 ## Clave SSH dedicada y host key
 
@@ -158,8 +162,20 @@ Conservar `.env`, `images.env` y los volúmenes. Elegir SHAs previamente sanos y
 ```bash
 cd /home/ubuntu/DA2/Infra/DA2-m2-infra/compose
 # Editar sólo BACKEND_IMAGE o FRONTEND_IMAGE en images.env con un SHA conocido.
-docker compose --env-file .env --env-file images.env -f compose.deploy.yml pull backend frontend
-docker compose --env-file .env --env-file images.env -f compose.deploy.yml up -d --no-deps backend frontend
+# Verificar antes con docker image inspect que esos SHAs estén en caché.
+docker compose --env-file .env --env-file images.env -f compose.deploy.yml up -d --no-deps --pull never backend frontend
 ```
 
-Después ejecutar los tres checks de Health. No usar `docker compose down`, `down -v`, `prune` ni recrear PostgreSQL durante esta recuperación.
+Después ejecutar Health y smoke HTTPS. Esto recupera imágenes dentro de HTTPS: para volver a infraestructura HTTP seguir el paso 8 de [https.md](https.md). No usar `docker compose down`, `down -v`, `prune` ni recrear PostgreSQL durante esta recuperación.
+
+## Caddy y certificados
+
+```bash
+docker compose --env-file .env --env-file images.env -f compose.deploy.yml logs --tail=100 caddy
+docker compose --env-file .env --env-file images.env -f compose.deploy.yml ps caddy
+```
+
+Los volúmenes `caddy_data` y `caddy_config` deben persistir. Caddy renueva en segundo
+plano, sin cron. Revisar fechas, mounts, logs y smoke HTTPS: el healthcheck de su
+API loopback sólo acredita liveness. Procedimientos completos de renovación, DNS,
+firewall y cambio a dominio propio en [https.md](https.md).

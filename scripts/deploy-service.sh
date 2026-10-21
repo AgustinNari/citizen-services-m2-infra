@@ -35,7 +35,7 @@ if [[ ! "$sha" =~ ^[0-9a-f]{40}$ ]]; then
   exit 64
 fi
 
-for command_name in docker flock curl awk mktemp; do
+for command_name in docker flock curl awk mktemp python3; do
   if ! command -v "$command_name" >/dev/null 2>&1; then
     echo "Required command not found: $command_name" >&2
     exit 69
@@ -50,6 +50,7 @@ compose_dir="$repository_root/compose"
 compose_file="$compose_dir/compose.deploy.yml"
 runtime_env="$compose_dir/.env"
 images_env="$compose_dir/images.env"
+smoke_script="$script_dir/smoke-https.sh"
 lock_dir="$HOME/DA2/.deploy"
 lock_file="$lock_dir/m2-deploy.lock"
 candidate_file=""
@@ -61,7 +62,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-for required_file in "$compose_file" "$runtime_env" "$images_env"; do
+for required_file in "$compose_file" "$runtime_env" "$images_env" "$smoke_script"; do
   if [[ ! -f "$required_file" ]]; then
     echo "Required file not found: $required_file" >&2
     exit 66
@@ -75,6 +76,11 @@ exec 9>"$lock_file"
 echo "Waiting for the shared deployment lock..."
 if ! flock -w 600 9; then
   echo "Could not acquire $lock_file within 600 seconds." >&2
+  exit 75
+fi
+
+if [[ -e "$lock_dir/m2-maintenance" ]]; then
+  echo "Deployment blocked by $lock_dir/m2-maintenance; HTTPS migration/maintenance in progress." >&2
   exit 75
 fi
 
@@ -124,31 +130,7 @@ make_candidate_file() {
 }
 
 smoke_once() {
-  local urls=()
-
-  if [[ "$service" == "backend" ]]; then
-    urls=(
-      "http://127.0.0.1:8080/actuator/health"
-      "http://127.0.0.1/api/catalog/categories"
-    )
-  else
-    urls=(
-      "http://127.0.0.1/"
-      "http://127.0.0.1/api/catalog/categories"
-    )
-  fi
-
-  local url
-  for url in "${urls[@]}"; do
-    curl \
-      --fail \
-      --silent \
-      --show-error \
-      --output /dev/null \
-      --connect-timeout 3 \
-      --max-time 10 \
-      "$url" || return 1
-  done
+  bash "$smoke_script" "$https_hostname" "$legacy_http_ip"
 }
 
 wait_for_smoke() {
@@ -173,7 +155,37 @@ wait_for_smoke() {
 show_failure_diagnostics() {
   compose_with_images "$1" ps || true
   compose_with_images "$1" logs --tail=100 "$service" || true
+  compose_with_images "$1" logs --tail=100 caddy frontend || true
 }
+
+ensure_previous_image_available() {
+  # The last known image was already running here. Do not make recovery depend
+  # on GHCR being reachable when its immutable SHA image is still cached.
+  if docker image inspect "$previous_image" >/dev/null 2>&1; then
+    echo "Using the previous immutable image from local cache for rollback."
+    return 0
+  fi
+  compose_with_images "$images_env" pull "$service"
+}
+
+# Let Compose perform dotenv interpolation; never source private runtime files.
+# Only extract nonsecret proxy settings, never print the rendered configuration.
+proxy_settings="$(compose_with_images "$images_env" config --format json | python3 -c '
+import ipaddress, json, re, sys
+env = json.load(sys.stdin)["services"]["caddy"]["environment"]
+host, ip = env["HTTPS_HOSTNAME"], env["LEGACY_HTTP_IP"]
+assert len(host) <= 253 and "." in host and all(re.fullmatch(r"[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?", p) for p in host.split(".")), "Invalid HTTPS hostname"
+assert not re.fullmatch(r"[0-9.]+", host), "Use a DNS hostname"
+assert ipaddress.ip_address(ip).version == 4, "Invalid legacy IPv4"
+print(host, ip)
+')"
+read -r https_hostname legacy_http_ip <<< "$proxy_settings"
+
+# Fail before touching an image if migration is incomplete or TLS is already down.
+if ! smoke_once; then
+  echo "HTTPS preflight failed; no image or images.env was changed. See docs/https.md." >&2
+  exit 1
+fi
 
 previous_image="$(read_image "$image_key")" || {
   echo "$image_key is missing from $images_env." >&2
@@ -211,8 +223,8 @@ rm -f -- "$candidate_file"
 candidate_file=""
 
 echo "Rolling $service back to its previous immutable image..." >&2
-if compose_with_images "$images_env" pull "$service" && \
-   compose_with_images "$images_env" up -d --no-deps "$service" && \
+if ensure_previous_image_available && \
+   compose_with_images "$images_env" up -d --no-deps --pull never "$service" && \
    wait_for_smoke "Rollback"; then
   compose_with_images "$images_env" ps
   echo "Rollback succeeded; the requested deployment was not applied." >&2

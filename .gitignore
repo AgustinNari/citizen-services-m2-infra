@@ -17,3 +17,7 @@ terraform.tfstate.*
 *.p12
 *.pfx
 id_rsa*
+
+# Disposable local validators / reports, never deployment input.
+/.https-validation/
+__pycache__/

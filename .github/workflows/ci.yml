@@ -52,6 +52,18 @@ jobs:
           FRONTEND_PORT: "80"
         run: docker compose --env-file .env.example --env-file images.env.example -f compose.deploy.yml config --quiet
 
+      - name: Validate Bash and exercise deployment and TLS smoke failures
+        run: |
+          for script in scripts/*.sh; do bash -n "$script"; done
+          python3 -m unittest discover -s tests -v
+
+      - name: Validate Caddy configuration without issuing certificates
+        run: |
+          docker run --rm --network none \
+            -e HTTPS_HOSTNAME=54-232-233-237.sslip.io -e LEGACY_HTTP_IP=54.232.233.237 \
+            -v "$PWD/caddy/Caddyfile:/etc/caddy/Caddyfile:ro" \
+            caddy:2.11.7-alpine caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+
       - name: Set up Terraform
         uses: hashicorp/setup-terraform@v4
         with:

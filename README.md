@@ -46,7 +46,7 @@ SIMULATOR_ENABLED=false # usar true sólo cuando el desarrollador lo necesite
 ATTACHMENT_STORAGE_ROOT=/var/lib/m2/attachments
 ```
 
-En Lightsail se usa el `.env` runtime con passwords DEV distintos y robustos, `FRONTEND_PORT=80` y `SIMULATOR_ENABLED=false`. Las versiones desplegadas viven por separado en `images.env`; ese archivo no contiene secretos y tampoco se versiona.
+En Lightsail se conserva el `.env` runtime existente, incluidas passwords, almacenamiento y el valor actual de `SIMULATOR_ENABLED` (sin imponer `true` ni `false` durante HTTPS). Se agregan `HTTPS_HOSTNAME=54-232-233-237.sslip.io` y `LEGACY_HTTP_IP=54.232.233.237`. `COMPOSE_PROJECT_NAME` debe conservar el nombre efectivo del despliegue existente. `FRONTEND_PORT` sólo afecta desarrollo local. Las versiones desplegadas viven por separado en `images.env`; ese archivo no contiene secretos y tampoco se versiona. No reemplazar archivos runtime existentes con ejemplos.
 
 ## Comandos habituales
 
@@ -78,13 +78,16 @@ No ejecutes `docker compose down -v` salvo que quieras eliminar deliberadamente 
 - PostgreSQL: `5432` únicamente dentro de la red Docker, sin publicación al host.
 - Adjuntos: volumen persistente `attachment_data`, montado en `/var/lib/m2/attachments`.
 
-En Lightsail se usa `compose.deploy.yml`, autocontenido y sin ninguna clave `build:`. Esta duplicación pequeña es deliberada: garantiza que la operación remota sólo pueda hacer `pull` y `up` con imágenes GHCR. Frontend publica el puerto `80`; Backend conserva el acceso local por `127.0.0.1:8080`, y PostgreSQL no publica puertos.
+En Lightsail se usa `compose.deploy.yml`, autocontenido y sin ninguna clave `build:`. Las aplicaciones usan imágenes GHCR por SHA y Caddy usa la imagen oficial `2.11.7-alpine`. Caddy publica TCP `80/443`, termina TLS público y renueva certificados con datos persistentes. Frontend no publica puertos; Backend conserva `127.0.0.1:8080`, y PostgreSQL no publica puertos. El HTTP de la IP anterior redirige explícitamente al hostname HTTPS.
 
 ```text
-Browser
+Browser HTTPS
    |
    v
-Frontend / Nginx
+Caddy :443 (HTTP :80 redirige a HTTPS)
+   |
+   v
+Frontend / Nginx :8082 privado
    |-- /    -> React
    `-- /api
           |
@@ -96,6 +99,13 @@ Frontend / Nginx
 ```
 
 El alta de AWS está documentada en [`docs/deploy-aws-dev.md`](docs/deploy-aws-dev.md). La operación diaria, configuración de GHCR/CD, smoke tests y rollback están en [`docs/runbook.md`](docs/runbook.md).
+
+**Para migrar desde HTTP, seguir primero [docs/https.md](docs/https.md)**: apagar CD,
+guardar el proyecto/volúmenes vigentes y Compose anterior, publicar Frontend compatible,
+liberar 80 y recién iniciar Caddy. Incluye comandos completos de sincronización,
+firewall, mantenimiento, cambio de dominio y reversión a HTTP. El script nuevo bloquea
+deploys mientras exista `/home/ubuntu/DA2/.deploy/m2-maintenance` y exige HTTPS sano.
+Los resultados y límites de validación local están en [docs/https-validation.md](docs/https-validation.md).
 
 ## Alcance funcional pendiente
 
