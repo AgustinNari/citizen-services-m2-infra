@@ -49,7 +49,9 @@ if os.environ.get('DEPLOY_FAULT') == 'rollback' and phase == 'rollback':
 url = args[-1]
 status, body, content_type, location = 200, '<html>React</html>', 'text/html', None
 if 'actuator/health' in url:
-    body, content_type = '{"status":"UP"}', 'application/json'
+    body = os.environ.get('HEALTH_BODY', '{"status":"UP"}')
+    content_type = os.environ.get('HEALTH_CONTENT_TYPE', 'application/json')
+    status = int(os.environ.get('HEALTH_HTTP_STATUS', '200'))
     if fault == 'health': body = '{"status":"DOWN"}'
 elif url.startswith('https:'):
     if fault == 'tls': raise SystemExit(60)
@@ -118,6 +120,42 @@ class HttpsTests(unittest.TestCase):
     def test_smoke_accepts_expected_responses(self):
         result = self.run_script('smoke-https.sh', 'test.example.com')
         self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_health_accepts_json_media_types_and_real_actuator_body(self):
+        self.env['HEALTH_BODY'] = '{"groups":["liveness","readiness"],"status":"UP"}'
+        for content_type in ('application/json',
+                             'application/vnd.spring-boot.actuator.v3+json',
+                             'Application/Vnd.Spring-Boot.Actuator.V3+Json; charset=UTF-8',
+                             'application/problem+json'):
+            with self.subTest(content_type=content_type):
+                self.env['HEALTH_CONTENT_TYPE'] = content_type
+                result = self.run_script('smoke-https.sh', 'test.example.com')
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn('HTTPS smoke passed:', result.stdout)
+
+    def test_health_rejects_invalid_responses(self):
+        valid = {'HEALTH_HTTP_STATUS': '200',
+                 'HEALTH_CONTENT_TYPE': 'application/vnd.spring-boot.actuator.v3+json',
+                 'HEALTH_BODY': '{"groups":["liveness","readiness"],"status":"UP"}'}
+        invalid = [
+            {'HEALTH_CONTENT_TYPE': value}
+            for value in ('text/html', 'text/plain', 'text/json', 'application/jsonp',
+                          'application/json-invalid', 'application/+json',
+                          'application/vnd.spring-boot.actuator.v3+json-invalid',
+                          'text/plain; note=application/json', '')
+        ] + [
+            {'HEALTH_BODY': value}
+            for value in ('{"status":"DOWN"}', '{"status":"UNKNOWN"}', '{"status":"up"}',
+                          '{"groups":["liveness","readiness"]}', 'not JSON',
+                          '<html>UP</html>', '[]', 'null')
+        ] + [{'HEALTH_HTTP_STATUS': value} for value in ('201', '204', '301', '503')]
+        for overrides in invalid:
+            with self.subTest(overrides=overrides):
+                self.env.update(valid)
+                self.env.update(overrides)
+                result = self.run_script('smoke-https.sh', 'test.example.com')
+                self.assertNotEqual(result.returncode, 0, result.stdout)
+                self.assertNotIn('HTTPS smoke passed:', result.stdout)
 
     def test_smoke_rejects_false_positives(self):
         for fault in ('tls', 'spa', 'api_redirect', 'invalid_json', 'health',

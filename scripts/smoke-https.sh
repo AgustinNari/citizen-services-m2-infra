@@ -54,7 +54,10 @@ body = pathlib.Path(root, 'body').read_text()
 if kind == 'frontend':
     assert 'content-type: text/html' in headers and '<html' in body.lower(), 'Expected React HTML'
 elif kind == 'health':
-    assert 'application/json' in headers and json.loads(body).get('status') == 'UP', 'Backend is not UP'
+    content_types = re.findall(r'^content-type:[ \t]*([^\r\n]*)', headers, re.M)
+    media_type = content_types[0].split(';', 1)[0].strip() if len(content_types) == 1 else ''
+    assert re.fullmatch(r'application/(?:json|[a-z0-9][a-z0-9!#$&^_.+-]*\+json)', media_type) \
+        and json.loads(body).get('status') == 'UP', 'Backend is not UP'
 elif kind == 'catalog':
     assert 'application/json' in headers, 'Expected JSON, not SPA fallback'
     data = json.loads(body)
