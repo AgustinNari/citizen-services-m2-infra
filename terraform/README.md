@@ -2,6 +2,11 @@
 
 Esta carpeta contiene la base mínima para administrar posteriormente el entorno DEV en Amazon Lightsail: instancia, Static IP, asociación y puertos públicos. No incluye PROD ni otros servicios AWS.
 
+La política pública contempla TCP 80 y 443, además de SSH restringido. No expone
+Backend, PostgreSQL, la API de Caddy ni RabbitMQ. Para HTTPS en la instancia manual
+existente usar [la migración](../docs/https.md); el cambio de este archivo no autoriza
+un apply ni reemplaza la revisión/importación del state.
+
 ## Estructura
 
 - `versions.tf`: versiones requeridas de Terraform y del provider AWS.

@@ -1,0 +1,31 @@
+{
+	# Keep HTTP/1.1 and HTTP/2; no extra UDP firewall rule is required.
+	servers {
+		protocols h1 h2
+	}
+}
+
+{$HTTPS_HOSTNAME} {
+	# A public CA is required. No tls internal / self-signed fallback.
+	tls {
+		issuer acme {
+			dir https://acme-v02.api.letsencrypt.org/directory
+		}
+	}
+	reverse_proxy frontend:8082 {
+		# This is the only Internet ingress. Never trust client proxy headers.
+		header_up Host {$HTTPS_HOSTNAME}
+		header_up X-Forwarded-Host {$HTTPS_HOSTNAME}
+		header_up X-Forwarded-Proto https
+		header_up X-Forwarded-Port 443
+		header_up X-Forwarded-For {remote_host}
+		header_up X-Real-IP {remote_host}
+		header_up -Forwarded
+		header_up -X-Forwarded-Prefix
+	}
+}
+
+# Explicit HTTP-only IP site: no certificate is requested for the old IP.
+http://{$LEGACY_HTTP_IP} {
+	redir https://{$HTTPS_HOSTNAME}{uri} 308
+}
