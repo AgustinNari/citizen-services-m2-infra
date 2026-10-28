@@ -1,7 +1,7 @@
 # HTTPS público: activación, mantenimiento y reversión
 
-Para cambiar el HTTPS ya activo de sslip.io a DuckDNS, seguir la guía específica
-[Migración manual a DuckDNS](duckdns-migration.md), incluido su control previo CAA.
+Para cambiar el HTTPS ya activo de sslip.io a Dynu, seguir la guía vigente
+[Migración a atencion-ciudadana.ddnsfree.com](dynu-migration.md).
 Los pasos de activación HTTP → HTTPS de este documento no deben repetirse para ese cambio.
 
 Esta guía describe la activación manual posterior a integrar HTTPS en `dev` y

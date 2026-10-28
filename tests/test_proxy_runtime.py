@@ -173,3 +173,8 @@ class ProxyRuntimeTests(unittest.TestCase):
 class DuckDnsProxyRuntimeTests(ProxyRuntimeTests):
     """Exercise the same real forwarding checks without resolving DuckDNS."""
     HOSTNAME = 'atencion-ciudadana.duckdns.org'
+
+
+class DynuProxyRuntimeTests(ProxyRuntimeTests):
+    """Reuse real proxy checks with the definitive hostname; no public DNS/ACME."""
+    HOSTNAME = 'atencion-ciudadana.ddnsfree.com'

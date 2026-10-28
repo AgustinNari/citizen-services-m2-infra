@@ -123,21 +123,21 @@ class HttpsTests(unittest.TestCase):
         result = self.run_script('smoke-https.sh', 'test.example.com')
         self.assertEqual(result.returncode, 0, result.stderr)
 
-    def test_duckdns_smoke_and_deployment_use_configured_hostname(self):
-        hostname = 'atencion-ciudadana.duckdns.org'
-        self.env['FIXTURE_HTTPS_HOSTNAME'] = hostname
-        self.env['HEALTH_CONTENT_TYPE'] = 'application/vnd.spring-boot.actuator.v3+json'
-        self.env['HEALTH_BODY'] = '{"groups":["liveness","readiness"],"status":"UP"}'
-        result = self.run_script('smoke-https.sh', hostname)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        for service in ('frontend', 'backend'):
-            with self.subTest(service=service):
-                result = self.run_script('deploy-service.sh', service, 'c' * 40)
+    def test_smoke_and_deployment_use_arbitrary_configured_hostname(self):
+        for hostname in ('atencion-ciudadana.duckdns.org', 'atencion-ciudadana.ddnsfree.com', 'tickets.example.org'):
+            with self.subTest(hostname=hostname):
+                self.env['FIXTURE_HTTPS_HOSTNAME'] = hostname
+                self.env['HEALTH_CONTENT_TYPE'] = 'application/vnd.spring-boot.actuator.v3+json'
+                self.env['HEALTH_BODY'] = '{"groups":["liveness","readiness"],"status":"UP"}'
+                result = self.run_script('smoke-https.sh', hostname)
                 self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertIn('Deployment smoke tests passed', result.stdout)
+                for service in ('frontend', 'backend'):
+                    result = self.run_script('deploy-service.sh', service, 'c' * 40)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertIn('Deployment smoke tests passed', result.stdout)
 
-    def test_duckdns_rejects_old_hostname_redirects_and_untrusted_tls(self):
-        hostname = 'atencion-ciudadana.duckdns.org'
+    def test_dynu_rejects_old_hostname_redirects_and_untrusted_tls(self):
+        hostname = 'atencion-ciudadana.ddnsfree.com'
         self.env['FIXTURE_HTTPS_HOSTNAME'] = hostname
         for fault in ('old_hostname', 'tls'):
             with self.subTest(fault=fault):

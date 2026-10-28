@@ -1,5 +1,8 @@
 # Migración manual de sslip.io a DuckDNS
 
+**Documento histórico.** El destino definitivo es Dynu; usar
+[dynu-migration.md](dynu-migration.md). No ejecutar los pasos de DuckDNS para esa migración.
+
 Preparación del 27/10/2026. **No ejecutar el cambio mientras el control DNS de A
 falle.** Esta entrega no cambia Lightsail, DNS, certificados ni variables GitHub.
 La aplicación sigue usando `54-232-233-237.sslip.io` hasta la intervención manual.
