@@ -23,13 +23,14 @@ FAKE_TOOL = r'''
 import json, os, pathlib, sys
 name, *args = sys.argv[1:]
 root = pathlib.Path(os.environ['FIXTURE_ROOT'])
+hostname = os.environ.get('FIXTURE_HTTPS_HOSTNAME', 'test.example.com')
 phase = (root / 'phase').read_text() if (root / 'phase').exists() else 'preflight'
 if name == 'docker':
     with (root / 'docker.log').open('a') as log:
         log.write(' '.join(args) + '\n')
     if 'config' in args:
         print(json.dumps({'services': {'caddy': {'environment': {
-            'HTTPS_HOSTNAME': 'test.example.com', 'LEGACY_HTTP_IP': '54.232.233.237'
+            'HTTPS_HOSTNAME': hostname, 'LEGACY_HTTP_IP': '54.232.233.237'
         }}}}))
     if 'up' in args:
         selected = args[args.index('--env-file', args.index('--env-file') + 1) + 1]
@@ -57,18 +58,19 @@ elif url.startswith('https:'):
     if fault == 'tls': raise SystemExit(60)
     if '/api?' in url:
         status, location = 308, '/api/?probe=https-smoke&n=1'
-        if fault == 'badredirect': location = 'http://test.example.com/api/'
+        if fault == 'badredirect': location = f'http://{hostname}/api/'
     elif '/api/catalog' in url:
         body, content_type = '[]', 'application/json'
         if fault == 'spa': body, content_type = '<html>SPA</html>', 'text/html'
-        if fault == 'api_redirect': status, location = 308, 'https://test.example.com/'
+        if fault == 'api_redirect': status, location = 308, f'https://{hostname}/'
         if fault == 'invalid_json': body = '{}'
     elif fault == 'empty_html': body = ''
 else:
     status = 308
-    location = 'https://test.example.com/api/catalog/categories?probe=https-smoke&n=1'
+    location = f'https://{hostname}/api/catalog/categories?probe=https-smoke&n=1'
     if fault == 'redirect200': status = 200
-    if fault == 'wrong_host': location = location.replace('test.example.com', 'attacker.invalid')
+    if fault == 'wrong_host': location = location.replace(hostname, 'attacker.invalid')
+    if fault == 'old_hostname': location = location.replace(hostname, '54-232-233-237.sslip.io')
 headers = f'HTTP/1.1 {status} Test\r\nContent-Type: {content_type}\r\n'
 if location: headers += f'Location: {location}\r\n'
 pathlib.Path(args[args.index('--dump-header') + 1]).write_text(headers + '\r\n')
@@ -120,6 +122,29 @@ class HttpsTests(unittest.TestCase):
     def test_smoke_accepts_expected_responses(self):
         result = self.run_script('smoke-https.sh', 'test.example.com')
         self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_duckdns_smoke_and_deployment_use_configured_hostname(self):
+        hostname = 'atencion-ciudadana.duckdns.org'
+        self.env['FIXTURE_HTTPS_HOSTNAME'] = hostname
+        self.env['HEALTH_CONTENT_TYPE'] = 'application/vnd.spring-boot.actuator.v3+json'
+        self.env['HEALTH_BODY'] = '{"groups":["liveness","readiness"],"status":"UP"}'
+        result = self.run_script('smoke-https.sh', hostname)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for service in ('frontend', 'backend'):
+            with self.subTest(service=service):
+                result = self.run_script('deploy-service.sh', service, 'c' * 40)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn('Deployment smoke tests passed', result.stdout)
+
+    def test_duckdns_rejects_old_hostname_redirects_and_untrusted_tls(self):
+        hostname = 'atencion-ciudadana.duckdns.org'
+        self.env['FIXTURE_HTTPS_HOSTNAME'] = hostname
+        for fault in ('old_hostname', 'tls'):
+            with self.subTest(fault=fault):
+                self.env['SMOKE_FAULT'] = fault
+                result = self.run_script('smoke-https.sh', hostname)
+                self.assertNotEqual(result.returncode, 0, result.stdout)
+                self.assertNotIn('HTTPS smoke passed:', result.stdout)
 
     def test_health_accepts_json_media_types_and_real_actuator_body(self):
         self.env['HEALTH_BODY'] = '{"groups":["liveness","readiness"],"status":"UP"}'

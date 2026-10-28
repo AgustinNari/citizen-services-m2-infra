@@ -50,6 +50,8 @@ class Echo(BaseHTTPRequestHandler):
 @unittest.skipUnless(all(os.environ.get(x) for x in ('CADDY_BIN', 'NGINX_BIN', 'FRONTEND_NGINX_CONFIG')),
                      'Optional: provide local Caddy/Nginx binaries and frontend config')
 class ProxyRuntimeTests(unittest.TestCase):
+    HOSTNAME = '54-232-233-237.sslip.io'
+
     @classmethod
     def setUpClass(cls):
         cls.temp = tempfile.TemporaryDirectory()
@@ -64,7 +66,7 @@ class ProxyRuntimeTests(unittest.TestCase):
         cls.addClassCleanup(cls.backend.shutdown)
         threading.Thread(target=cls.backend.serve_forever, daemon=True).start()
         cls.local_port, cls.private_port, cls.edge_port, cls.legacy_port = [port() for _ in range(4)]
-        cls.host = '54-232-233-237.sslip.io'
+        cls.host = cls.HOSTNAME
         config = Path(os.environ['FRONTEND_NGINX_CONFIG']).read_text()
         config = config.replace('8082', str(cls.private_port))
         config = config.replace('listen 80;', f'listen 127.0.0.1:{cls.local_port};')
@@ -166,3 +168,8 @@ class ProxyRuntimeTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(body, b'%PDF-1.7\nattachment-test\x00\xff')
         self.assertEqual(headers['Content-Disposition'], 'attachment; filename="test.pdf"')
+
+
+class DuckDnsProxyRuntimeTests(ProxyRuntimeTests):
+    """Exercise the same real forwarding checks without resolving DuckDNS."""
+    HOSTNAME = 'atencion-ciudadana.duckdns.org'

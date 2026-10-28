@@ -1,5 +1,9 @@
 # HTTPS público: activación, mantenimiento y reversión
 
+Para cambiar el HTTPS ya activo de sslip.io a DuckDNS, seguir la guía específica
+[Migración manual a DuckDNS](duckdns-migration.md), incluido su control previo CAA.
+Los pasos de activación HTTP → HTTPS de este documento no deben repetirse para ese cambio.
+
 Esta guía describe la activación manual posterior a integrar HTTPS en `dev` y
 publicar la imagen Frontend por SHA. Integrar código o publicar una imagen no activa
 HTTPS: no se debe acceder a Lightsail ni modificar AWS durante esa integración.
