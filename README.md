@@ -107,6 +107,13 @@ firewall, mantenimiento, cambio de dominio y reversión a HTTP. El script nuevo 
 deploys mientras exista `/home/ubuntu/DA2/.deploy/m2-maintenance` y exige HTTPS sano.
 Los resultados y límites de validación local están en [docs/https-validation.md](docs/https-validation.md).
 
+## Clave de seguimiento recuperable
+
+Ambos Compose requieren `TRACKING_CODE_ENCRYPTION_KEY_BASE64` y `TRACKING_CODE_ENCRYPTION_KEY_ID`
+para Backend. Preparar una clave privada persistente antes de publicar/desplegar la nueva imagen:
+[procedimiento y orden seguro de CD](docs/tracking-code-encryption.md). Los ejemplos no contienen
+una clave por defecto. Se conserva el HTTPS vigente y no se configura Lightsail desde esta entrega.
+
 ## Alcance funcional pendiente
 
 Este bloque garantiza build, arranque, migraciones y proxy, pero no completa los endpoints
