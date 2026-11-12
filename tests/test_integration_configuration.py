@@ -68,6 +68,18 @@ class IntegrationPolicyTests(unittest.TestCase):
             self.assertNotIn(secret, result.stdout + result.stderr)
             self.assertNotIn(KEY, result.stdout + result.stderr)
 
+    def test_cli_outputs_only_requested_nonsecret_deployment_settings(self):
+        for provider in ('MOCK', 'M1'):
+            config = configuration(IDENTITY_PROVIDER=provider)
+            for option, expected in (('--proxy-settings', f'{HOST} 192.0.2.1\n'),
+                                     ('--deployment-settings', f'{HOST} 192.0.2.1 {provider}\n')):
+                with self.subTest(provider=provider, option=option):
+                    result = subprocess.run([sys.executable, str(SCRIPT), option], input=json.dumps(config),
+                                            capture_output=True, text=True)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(result.stdout, expected)
+                    self.assertEqual(result.stderr, '')
+
     def test_private_keys_cannot_be_forwarded_to_frontend_or_build(self):
         for where in ('environment', 'build'):
             config = configuration()
@@ -139,6 +151,15 @@ class IntegrationComposeTests(unittest.TestCase):
         deploy = self.render('compose.deploy.yml')
         self.assertNotIn('build', deploy['services']['frontend'])
         self.assertNotIn('environment', deploy['services']['frontend'])
+
+    def test_frontend_digest_preserves_backend_configuration_proxy_and_volumes(self):
+        digest = 'ghcr.io/santimussi/front-desarrollo-apps-2@sha256:' + '1' * 64
+        baseline = self.render('compose.deploy.yml', IDENTITY_PROVIDER='M1', APP_JWT_SECRET=KEY)
+        selected = self.render('compose.deploy.yml', IDENTITY_PROVIDER='M1', APP_JWT_SECRET=KEY, FRONTEND_IMAGE=digest)
+        policy.validate(selected)
+        self.assertEqual(selected['services']['frontend']['image'], digest)
+        baseline['services']['frontend']['image'] = digest
+        self.assertEqual(selected, baseline)
 
     def test_deploy_derives_origin_from_current_hostname_without_mutating_proxy_architecture(self):
         config = self.render('compose.deploy.yml', HTTPS_HOSTNAME='changed.example.test')

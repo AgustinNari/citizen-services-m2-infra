@@ -33,10 +33,24 @@ if name == 'docker':
         print(json.dumps({'services': {'backend': {'environment': backend_env}, 'caddy': {'environment': {
             'HTTPS_HOSTNAME': hostname, 'LEGACY_HTTP_IP': '54.232.233.237'
         }}}}))
+    if 'ps' in args and '-q' in args and args[-1] == 'backend':
+        print('' if os.environ.get('FIXTURE_BACKEND_MISSING') else 'd' * 64)
+    if args[:1] == ['inspect']:
+        print(os.environ.get('FIXTURE_BACKEND_RUNNING', 'true'))
+        provider = os.environ.get('FIXTURE_RUNNING_BACKEND_PROVIDER', 'MOCK')
+        if provider != 'LEGACY': print('IDENTITY_PROVIDER=' + provider)
     if 'up' in args:
         selected = args[args.index('--env-file', args.index('--env-file') + 1) + 1]
         (root / 'phase').write_text('deployment' if '.candidate.' in selected else 'rollback')
+        key = 'FRONTEND_IMAGE' if args[-1] == 'frontend' else 'BACKEND_IMAGE'
+        reference = next(line.split('=', 1)[1] for line in pathlib.Path(selected).read_text().splitlines() if line.startswith(key + '='))
+        with (root / 'up-images.log').open('a') as log:
+            log.write(json.dumps({'service': args[-1], 'reference': reference}) + '\n')
     if args[:2] == ['image', 'inspect'] and os.environ.get('CACHE_MISS'):
+        raise SystemExit(1)
+    if args[:2] == ['image', 'inspect'] and '--format' in args:
+        print(json.loads(os.environ.get('FIXTURE_IMAGE_PROVIDERS', '{}')).get(args[-1], ''))
+    if 'pull' in args and os.environ.get('FIXTURE_PULL_FAIL'):
         raise SystemExit(1)
     if 'pull' in args and phase != 'preflight' and os.environ.get('ROLLBACK_PULL_FAIL'):
         raise SystemExit(1)

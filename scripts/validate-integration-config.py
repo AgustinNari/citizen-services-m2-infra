@@ -82,13 +82,19 @@ def validate(config):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--proxy-settings', action='store_true', help='Print only validated public hostname and legacy IPv4')
+    output = parser.add_mutually_exclusive_group()
+    output.add_argument('--proxy-settings', action='store_true', help='Print only validated public hostname and legacy IPv4')
+    output.add_argument('--deployment-settings', action='store_true', help='Print public proxy settings and Backend provider')
     args = parser.parse_args()
     try:
-        proxy = validate(json.load(sys.stdin))
-        if args.proxy_settings:
+        config = json.load(sys.stdin)
+        proxy = validate(config)
+        if args.proxy_settings or args.deployment_settings:
             require(proxy is not None, 'MISSING_PROXY_SETTINGS')
-            print(*proxy)
+            if args.deployment_settings:
+                print(*proxy, config['services']['backend']['environment'].get('IDENTITY_PROVIDER', 'MOCK'))
+            else:
+                print(*proxy)
     except (ValueError, KeyError, TypeError, AttributeError, OverflowError):
         # Parser exceptions can contain rejected secret values; never interpolate them.
         print('Integration configuration rejected; check M1/Core modes, private credentials and HTTPS origins.', file=sys.stderr)

@@ -77,10 +77,11 @@ docker compose --project-directory compose --env-file compose/.env \
 
 No guardar el JSON renderizado: contiene secretos. `config --quiet` comprueba
 interpolación, no el estado remoto ni todas las validaciones de arranque de Backend.
-El validador adicional no sustituye esas comprobaciones ni prueba la identidad
-compilada de una imagen Frontend preexistente.
+El validador adicional no sustituye esas comprobaciones. Al desplegar Frontend,
+el script contrasta además el proveedor configurado con el contenedor Backend
+en ejecución y la etiqueta OCI de proveedor de la imagen descargada.
 
-## Frontend: pendiente exacto en el otro repositorio
+## Frontend: imagen M1 por digest (etapas 6 y 7)
 
 El Dockerfile actual ya declara `ARG VITE_IDENTITY_PROVIDER=MOCK` y
 `ARG VITE_API_BASE_URL=/api`. El Compose local permite pasar
@@ -90,26 +91,39 @@ HTTP local no prueba una cookie `Secure`.
 
 El Compose de deploy usa una imagen preconstruida. Poner `VITE_*` en el entorno del
 contenedor Nginx o cambiar únicamente el `.env` del servidor **no recompila Vite**.
-La imagen publicada actualmente usa MOCK porque el workflow no pasa el nuevo argumento.
+El workflow vigente de Frontend mantiene MOCK en los builds habituales y permite
+`Actions → Frontend CI → Run workflow`, rama `dev` o `main`,
+`identity_provider=M1`. Esa ejecución publica sin deploy una etiqueta
+`m1-sha-<commit>-run-<run_id>-<attempt>` y registra en el resumen de publicación
+la referencia completa `ghcr.io/santimussi/front-desarrollo-apps-2@sha256:...`.
+Copiar esa referencia real; no inventar el digest ni sustituir el tag MOCK del mismo SHA.
 
-Pendiente, sin modificarlo en esta entrega: en
-`Frontend/front-desarrollo-apps-2/.github/workflows/ci.yml`, agregar
-`VITE_IDENTITY_PROVIDER: M1` al build de validación, pasar
-`--build-arg VITE_IDENTITY_PROVIDER=M1` al `docker build` de validación y convertir
-`publish.with.build-args` en un bloque con ambas líneas:
+Para un despliegue futuro aprobado, después de configurar y recrear Backend en
+M1 con Core todavía apagado, desde el directorio Infra real:
 
-```yaml
-build-args: |
-  VITE_API_BASE_URL=/api
-  VITE_IDENTITY_PROVIDER=M1
+```bash
+# Sustituir el marcador por los 64 hexadecimales del digest publicado, sin los signos < >.
+frontend_image='ghcr.io/santimussi/front-desarrollo-apps-2@sha256:<DIGEST_PUBLICADO>'
+bash scripts/deploy-service.sh frontend "$frontend_image"
 ```
 
-Realizar ese ajuste en un nuevo commit aprobado y publicar su **nuevo SHA** con M1;
-conservar el SHA MOCK anterior para rollback. No reconstruir/reemplazar un mismo
-tag `sha-*` con otra modalidad usando una variable mutable: rompería la identidad
-de imagen y la caché de rollback del deploy script. Si se desea publicar ambas
-modalidades del mismo SHA, antes se necesitan tags/digests diferenciados y adaptar
-el deploy script (actualmente admite sólo `sha-<40 hex>`). Esa variante no está implementada.
+El selector nuevo acepta únicamente ese repositorio y un digest SHA-256 canónico
+en minúsculas. Rechaza referencias arbitrarias y tags `latest`, `dev` o `m1-*`;
+la etiqueta M1 sirve para localizar el digest, no como entrada del despliegue.
+El formato `bash scripts/deploy-service.sh frontend SHA_COMPLETO` continúa vigente
+para imágenes legacy; Backend conserva exclusivamente su selector SHA anterior.
+
+El script descarga primero la imagen y comprueba su etiqueta
+`ar.edu.uade.m2.identity-provider` emitida por el workflow de confianza, sin
+deducir el modo del nombre. Los digests requieren metadata `M1` o `MOCK` y deben
+coincidir con el Backend configurado **y en ejecución**. Editar `.env` sin recrear
+Backend no alcanza. Esta comprobación lee sólo estado/proveedor del contenedor,
+sin imprimir el resto de su entorno. No modifica flags, archivos privados ni Backend.
+
+Compatibilidad histórica: un SHA anterior sin la etiqueta de proveedor puede
+usarse sólo con Backend MOCK; su bundle no puede verificarse por esa metadata
+ausente. Nunca se acepta una imagen sin etiqueta para M1 ni un digest sin etiqueta.
+Conservar los SHA/digests anteriores para rollback; no reutilizar tags con otro modo.
 
 No hay otro cambio indispensable de código Frontend ni de Nginx/Caddy para esta
 preparación: el listener privado 8082 conserva HTTPS/origen, `/api`, métodos,
@@ -131,10 +145,11 @@ un broker local ni declaraciones de topología en Infra.
    habitual. Flyway aplicará incrementalmente las migraciones pendientes al
    arrancar (requiere aprobación/ventana posterior). Verificar salud, usuarios,
    permisos, tickets, adjuntos y tracking; no reinicializar datos.
-4. Tener lista la imagen Frontend M1 del nuevo SHA y el material privado M1.
+4. Tener lista la referencia por digest de Frontend M1 y el material privado M1.
    En una transición coordinada, seleccionar M1 en Backend con Core apagado y
    desplegar Frontend M1. Evitar mantener versiones con proveedores distintos;
-   mantener CD pausado hasta aceptar el conjunto y actualizar su workflow.
+   mantener CD pausado hasta aceptar el conjunto. Un push habitual de Frontend
+   sigue publicando MOCK: su intento de deploy será rechazado mientras Backend sea M1.
    El deploy script habitual conserva lock compartido, preflight HTTPS y rollback
    de imagen. Un cambio de `.env` sólo se aplica al recrear el servicio afectado.
 5. Probar login con ciudadano y empleado M1 autorizado, restauración al recargar,
@@ -158,10 +173,9 @@ un broker local ni declaraciones de topología en Infra.
    elegibles; los eventos anteriores y los tickets pre-V50 no se inscriben.
    Verificar creación identificada, enrutamiento anónimo y hechos SLA reales.
 
-Usar SHAs aprobados con `bash scripts/deploy-service.sh backend SHA_COMPLETO` y
-`bash scripts/deploy-service.sh frontend SHA_COMPLETO`, según el runbook existente.
-No desplegar ambos repositorios concurrentemente ni reactivar un workflow Frontend
-que todavía publique MOCK tras la transición a M1.
+Usar SHAs aprobados para Backend y el digest aprobado para Frontend M1, como se
+indica arriba. No desplegar ambos repositorios concurrentemente. No reactivar CD
+de Frontend esperando que sus pushes habituales generen M1: siguen siendo MOCK.
 
 ## Rollback de imagen, configuración y base
 
@@ -169,6 +183,23 @@ El deploy script revierte **sólo la imagen** del servicio ante fallo de smoke;
 no revierte `.env`, no deshace publicaciones ni migra la base hacia atrás.
 Conservar una pareja de imágenes/configuración compatible y revisar también la
 configuración si el fallo fue causado por nuevos flags/secretos.
+
+El rollback admite como referencia anterior tanto `sha-<commit>` como el digest
+del repositorio Frontend permitido. Usa la caché local antes de depender de GHCR y
+conserva `images.env` anterior si el intento falla. Si un pull o la validación de
+proveedor de la nueva imagen fallan, no recrea ningún servicio.
+
+Si un despliegue entre versiones del mismo modo falla después de recrear,
+restaura la imagen anterior y devuelve código 1. Si se cambió de MOCK a M1 (o al
+revés), también restaura la imagen anterior, pero el Backend puede continuar en
+el modo nuevo: devuelve código 2 y exige recuperación coordinada, sin ocultar la
+incompatibilidad ni reiniciar Backend automáticamente. La reversión integral de
+ambos proveedores no puede resolverse sólo cambiando la imagen Frontend.
+
+Si falla una prueba funcional con un despliegue ya aceptado por el smoke, pausar
+CD y coordinar la configuración/proveedor de Backend con la imagen anterior;
+después seleccionar esa imagen con la misma interfaz (SHA legacy o digest).
+No cambiar las claves ni la base para conseguir que funcione una imagen antigua.
 
 Ante un problema de integración, deshabilitar publicación automática, Outbox e
 Inbox y recrear únicamente Backend en una intervención coordinada. Los eventos
