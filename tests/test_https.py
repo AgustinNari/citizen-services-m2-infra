@@ -29,7 +29,8 @@ if name == 'docker':
     with (root / 'docker.log').open('a') as log:
         log.write(' '.join(args) + '\n')
     if 'config' in args:
-        print(json.dumps({'services': {'caddy': {'environment': {
+        backend_env = json.loads(os.environ.get('FIXTURE_BACKEND_ENV_JSON', '{}'))
+        print(json.dumps({'services': {'backend': {'environment': backend_env}, 'caddy': {'environment': {
             'HTTPS_HOSTNAME': hostname, 'LEGACY_HTTP_IP': '54.232.233.237'
         }}}}))
     if 'up' in args:
@@ -99,6 +100,7 @@ class HttpsTests(unittest.TestCase):
         python.chmod(0o755)
         (self.root / 'tools.py').write_text(FAKE_TOOL)
         shutil.copyfile(ROOT / 'scripts/smoke-https.sh', self.root / 'scripts/smoke-https.sh')
+        shutil.copyfile(ROOT / 'scripts/validate-integration-config.py', self.root / 'scripts/validate-integration-config.py')
         # Only isolate the production lock's directory; do not touch the user's HOME.
         deploy = (ROOT / 'scripts/deploy-service.sh').read_text()
         lock_line = 'lock_dir="$HOME/DA2/.deploy"'
@@ -122,6 +124,20 @@ class HttpsTests(unittest.TestCase):
     def test_smoke_accepts_expected_responses(self):
         result = self.run_script('smoke-https.sh', 'test.example.com')
         self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_invalid_integration_fails_before_pull_up_or_image_change_without_logging_secrets(self):
+        secret = 'synthetic-private-value-not-for-logs'
+        self.env['FIXTURE_BACKEND_ENV_JSON'] = json.dumps({
+            'IDENTITY_PROVIDER': 'M1', 'APP_JWT_SECRET': secret,
+            'CORE_RABBIT_PASSWORD': secret, 'CORE_OUTBOX_AUTO_APPROVE_NEW_EVENTS': 'true',
+            'CORE_OUTBOX_ENABLED': 'false'})
+        result = self.run_script('deploy-service.sh', 'backend', 'c' * 40)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn(secret, result.stdout + result.stderr)
+        self.assertEqual(self.images.read_text(), self.original)
+        calls = (self.root / 'docker.log').read_text()
+        self.assertNotIn(' pull ', calls)
+        self.assertNotIn(' up ', calls)
 
     def test_smoke_and_deployment_use_arbitrary_configured_hostname(self):
         for hostname in ('atencion-ciudadana.duckdns.org', 'atencion-ciudadana.ddnsfree.com', 'tickets.example.org'):

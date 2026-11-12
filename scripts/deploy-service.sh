@@ -51,6 +51,7 @@ compose_file="$compose_dir/compose.deploy.yml"
 runtime_env="$compose_dir/.env"
 images_env="$compose_dir/images.env"
 smoke_script="$script_dir/smoke-https.sh"
+integration_validator="$script_dir/validate-integration-config.py"
 lock_dir="$HOME/DA2/.deploy"
 lock_file="$lock_dir/m2-deploy.lock"
 candidate_file=""
@@ -62,7 +63,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-for required_file in "$compose_file" "$runtime_env" "$images_env" "$smoke_script"; do
+for required_file in "$compose_file" "$runtime_env" "$images_env" "$smoke_script" "$integration_validator"; do
   if [[ ! -f "$required_file" ]]; then
     echo "Required file not found: $required_file" >&2
     exit 66
@@ -170,15 +171,7 @@ ensure_previous_image_available() {
 
 # Let Compose perform dotenv interpolation; never source private runtime files.
 # Only extract nonsecret proxy settings, never print the rendered configuration.
-proxy_settings="$(compose_with_images "$images_env" config --format json | python3 -c '
-import ipaddress, json, re, sys
-env = json.load(sys.stdin)["services"]["caddy"]["environment"]
-host, ip = env["HTTPS_HOSTNAME"], env["LEGACY_HTTP_IP"]
-assert len(host) <= 253 and "." in host and all(re.fullmatch(r"[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?", p) for p in host.split(".")), "Invalid HTTPS hostname"
-assert not re.fullmatch(r"[0-9.]+", host), "Use a DNS hostname"
-assert ipaddress.ip_address(ip).version == 4, "Invalid legacy IPv4"
-print(host, ip)
-')"
+proxy_settings="$(compose_with_images "$images_env" config --format json | python3 "$integration_validator" --proxy-settings)"
 read -r https_hostname legacy_http_ip <<< "$proxy_settings"
 
 # Fail before touching an image if migration is incomplete or TLS is already down.
