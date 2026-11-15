@@ -28,7 +28,7 @@ cd compose
 cp .env.example .env
 ```
 
-Editá `.env` y reemplazá todos los placeholders de passwords por valores locales. El archivo `.env` real está ignorado por Git y no debe versionarse. El simulador queda apagado por defecto; un desarrollador puede habilitarlo explícitamente con `SIMULATOR_ENABLED=true`.
+Editá `.env` y completá las contraseñas vacías con valores privados locales. Generá también la clave persistente y su ID según [la guía existente](docs/tracking-code-encryption.md). No reutilices claves sintéticas de tests. El archivo `.env` real está ignorado por Git y no debe versionarse. El simulador queda apagado por defecto; un desarrollador puede habilitarlo explícitamente con `SIMULATOR_ENABLED=true`.
 
 Variables por entorno (sin versionar valores reales):
 
@@ -50,11 +50,11 @@ En Lightsail se conserva el `.env` runtime existente, incluidas passwords, almac
 
 ## Comandos habituales
 
-Ejecutar desde `Infra/compose`:
+Ejecutar desde `Infra/DA2-m2-infra/compose`:
 
 ```bash
 # Levantar
-docker compose up -d
+docker compose up --build --wait --wait-timeout 600
 
 # Reconstruir y levantar
 docker compose up -d --build
@@ -126,3 +126,33 @@ Este bloque garantiza build, arranque, migraciones y proxy, pero no completa los
 funcionales que el Frontend espera y el Backend aún no implementa. Esas divergencias no
 impiden desplegar el stack; algunas pantallas pueden recibir `401`, `404` o `405` hasta que
 se resuelvan en tareas funcionales posteriores.
+
+## Preparación de G1 y validación de release
+
+El comando local anterior espera PostgreSQL sano, Backend con HTTP 200 en
+`/actuator/health` y luego Frontend sano. Los usuarios MOCK son
+`citizen@example.test`, `agent@example.test`, `area.responsible@example.test` y
+`module.admin@example.test`; usar las contraseñas privadas configuradas en las
+cuatro variables `MOCK_*_PASSWORD`. El modo local predeterminado es MOCK, con
+simulador y Core deshabilitados. No usar credenciales M1 reales para pruebas locales.
+
+G1 queda en preparación: no se agregó broker, mock M1/Core ni simulador auxiliar.
+Cuando se estabilicen los contratos, acordar dependencias locales aisladas,
+TLS/confianza, topología retry/DLQ y datos de prueba. Después un tercero debe clonar
+las revisiones acordadas, configurar secretos sin imprimirlos y cronometrar el
+arranque y flujo completo en una máquina limpia en <=15 minutos. El README y los
+componentes básicos actuales no demuestran por sí solos ese requisito.
+Lightsail utiliza exclusivamente `compose.deploy.yml`; no aplicar allí estos pasos.
+
+Los tags `v*` ejecutan Infra CI sin despliegue ni cambios AWS. Para QA se registra
+ref/SHA y resumen de secretos. Sonar, ZAP y homologación real con Core siguen pendientes.
+
+Desde la raíz: `python .github/scripts/check-secrets.py` (Python 3.11+ y Git).
+Usa Gitleaks 8.30.1 temporal, con SHA-256 verificado, sobre historial completo de
+las refs locales y archivos versionables actuales (incluidos untracked no ignorados).
+No descarga refs; requiere un clon completo. `--gitleaks <ruta>` permite usar esa
+versión instalada; `--output <archivo-fuera-del-repo.json>` conserva sólo metadata.
+Los `.env` privados ignorados no se escanean ni se deben agregar a Git. Nunca subir
+reportes crudos. Sólo se exceptúa la fixture pública bytes 0..31 en rutas revisadas;
+no hay exclusiones por directorios completos ni por commits. El resultado limpio
+no prueba que credenciales históricas de otros repositorios no se hayan reutilizado.
