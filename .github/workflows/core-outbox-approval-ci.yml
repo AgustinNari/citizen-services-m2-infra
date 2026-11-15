@@ -1,0 +1,25 @@
+name: Core Outbox Approval CI
+
+on:
+  pull_request:
+    branches: [main, dev]
+  push:
+    branches: [main, dev]
+
+permissions:
+  contents: read
+
+jobs:
+  offline-tests:
+    # No path filter: this check can safely be required by main's branch protection.
+    name: Core Outbox approval offline tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Validate Bash and run offline approval tests
+        run: |
+          bash -n scripts/approve-core-outbox.sh
+          python3 -m unittest discover -s tests -p 'test_core_outbox*.py' -v
