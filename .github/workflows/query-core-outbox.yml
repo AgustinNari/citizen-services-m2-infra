@@ -1,0 +1,47 @@
+name: Query Core Outbox Events
+
+on:
+  workflow_dispatch:
+    inputs:
+      lookup_by:
+        description: 'Buscar eventos por ticket_id o event_id'
+        required: true
+        type: choice
+        options: [ticket_id, event_id]
+      lookup_id:
+        description: 'Un único UUID; event_id requiere UUID v4'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: m2-core-outbox-query
+  cancel-in-progress: false
+
+jobs:
+  query:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: core-outbox-approval
+    steps:
+      - name: Checkout reviewed tooling
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Validate tooling offline
+        run: |
+          bash -n scripts/approve-core-outbox.sh
+          python3 -m unittest discover -s tests -p 'test_core_outbox*.py' -v
+      - name: Query explicit metadata and write Summary
+        env:
+          OUTBOX_LOOKUP_BY: ${{ inputs.lookup_by }}
+          OUTBOX_LOOKUP_ID: ${{ inputs.lookup_id }}
+          OUTBOX_APPROVALS_ENABLED: ${{ vars.OUTBOX_APPROVALS_ENABLED }}
+          LIGHTSAIL_HOST: ${{ vars.LIGHTSAIL_HOST }}
+          LIGHTSAIL_USER: ${{ vars.LIGHTSAIL_USER }}
+          LIGHTSAIL_KNOWN_HOSTS: ${{ vars.LIGHTSAIL_KNOWN_HOSTS }}
+          OUTBOX_SSH_PRIVATE_KEY: ${{ secrets.OUTBOX_SSH_PRIVATE_KEY }}
+        run: python3 scripts/run_core_outbox_query.py
