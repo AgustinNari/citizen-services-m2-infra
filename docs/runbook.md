@@ -126,7 +126,7 @@ Agregar como **Repository Secret** `LIGHTSAIL_SSH_PRIVATE_KEY`, usando una clave
 
 Para habilitar CD, establecer `CD_ENABLED=true` en cada repositorio sólo después de probar deploy y rollback manuales. Si falta, está vacía o tiene cualquier otro valor, la publicación GHCR continúa y el job deploy se omite sin fallar el workflow.
 
-Infra valida Compose, Caddyfile, Bash, pruebas de smoke/rollback y Terraform: no tiene CD, no utiliza `CD_ENABLED` ni `LIGHTSAIL_*` y no requiere Secrets de deployment. Frontend además valida Nginx. Si en el futuro se implementa Infra CD, deberá adoptar la misma convención de Repository Variables (`CD_ENABLED`, `LIGHTSAIL_HOST`, `LIGHTSAIL_USER`, `LIGHTSAIL_DEPLOY_PATH`, `LIGHTSAIL_KNOWN_HOSTS`) y Repository Secret (`LIGHTSAIL_SSH_PRIVATE_KEY`), sin depender de GitHub Environments.
+Infra valida Compose, Caddyfile, Bash, pruebas de smoke/rollback y Terraform; no tiene CD de imágenes ni utiliza `CD_ENABLED`. La [aprobación manual de Outbox](core-outbox-approval.md) usa el Environment `core-outbox-approval`, restringido a la rama `main` y sin revisores obligatorios, con `LIGHTSAIL_HOST`, `LIGHTSAIL_USER`, `LIGHTSAIL_KNOWN_HOSTS`, `OUTBOX_APPROVALS_ENABLED` y una clave restringida independiente `OUTBOX_SSH_PRIVATE_KEY`. Mantener esa clave sólo en el Environment y proteger los cambios de `main`; no guardarla como Repository Secret. Frontend además valida Nginx. Si en el futuro se implementa Infra CD, deberá adoptar la convención de CD de Backend/Frontend, conservando la separación de claves por función.
 
 ## Clave SSH dedicada y host key
 

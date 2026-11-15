@@ -1,0 +1,55 @@
+name: Approve Core Outbox Events
+
+on:
+  workflow_dispatch:
+    inputs:
+      event_ids:
+        description: '1–50 UUID v4 de eventos, separados por comas o saltos de línea'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+# Cross-repository deployment exclusion is enforced by the Lightsail flock too.
+concurrency:
+  group: m2-core-outbox-approval
+  cancel-in-progress: false
+
+jobs:
+  approve:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Configure this Environment with ONLY the branch main and NO required reviewers.
+    # The server-side branch policy protects its secret even if another branch edits this YAML.
+    environment: core-outbox-approval
+    steps:
+      - name: Check supported branch
+        env:
+          SELECTED_REF: ${{ github.ref }}
+        run: |
+          case "$SELECTED_REF" in
+            refs/heads/main) ;;
+            *) echo '::error::Run this workflow from main.'; exit 1 ;;
+          esac
+
+      - name: Checkout approval tooling
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Validate tooling offline
+        run: |
+          bash -n scripts/approve-core-outbox.sh
+          python3 -m unittest discover -s tests -p 'test_core_outbox*.py' -v
+
+      - name: Approve explicit events and report confirmed results
+        env:
+          OUTBOX_EVENT_IDS: ${{ inputs.event_ids }}
+          OUTBOX_APPROVALS_ENABLED: ${{ vars.OUTBOX_APPROVALS_ENABLED }}
+          LIGHTSAIL_HOST: ${{ vars.LIGHTSAIL_HOST }}
+          LIGHTSAIL_USER: ${{ vars.LIGHTSAIL_USER }}
+          LIGHTSAIL_KNOWN_HOSTS: ${{ vars.LIGHTSAIL_KNOWN_HOSTS }}
+          OUTBOX_SSH_PRIVATE_KEY: ${{ secrets.OUTBOX_SSH_PRIVATE_KEY }}
+        run: python3 scripts/run_core_outbox_approval.py

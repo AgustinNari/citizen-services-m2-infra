@@ -114,6 +114,12 @@ para Backend. Preparar una clave privada persistente antes de publicar/desplegar
 [procedimiento y orden seguro de CD](docs/tracking-code-encryption.md). Los ejemplos no contienen
 una clave por defecto. Se conserva el HTTPS vigente y no se configura Lightsail desde esta entrega.
 
+## Aprobaciones manuales del Outbox
+
+Para aprobar UUID del Outbox desde GitHub Actions con permisos Write de Infra, consultar
+[configuración inicial, publicación en main y operación](docs/core-outbox-approval.md).
+La herramienta usa aprobación explícita, SSH restringido y el lock compartido de deployments.
+
 ## Alcance funcional pendiente
 
 Este bloque garantiza build, arranque, migraciones y proxy, pero no completa los endpoints
