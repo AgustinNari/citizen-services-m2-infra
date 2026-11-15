@@ -29,7 +29,8 @@ def validate_report(raw, ids):
     return value
 
 
-def connect(ids, settings):
+def ssh_request(payload, settings, *, command='approve-core-outbox-v1', timeout=1550):
+    require(command in {'approve-core-outbox-v1', 'query-core-outbox-v1'})
     host, user = settings.get('LIGHTSAIL_HOST', ''), settings.get('LIGHTSAIL_USER', '')
     require(re.fullmatch(r'[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?', host))
     require(re.fullmatch(r'[a-z_][a-z0-9_-]{0,31}', user))
@@ -46,19 +47,23 @@ def connect(ids, settings):
         pinned_hosts.chmod(0o600)
         # Do not send the key in the SSH child's environment.
         child_env = {key: settings[key] for key in ('PATH', 'HOME', 'LANG') if key in settings}
-        result = subprocess.run([
+        return subprocess.run([
             'ssh', '-F', '/dev/null', '-T', '-i', str(private_key),
             '-o', 'BatchMode=yes', '-o', 'IdentitiesOnly=yes',
             '-o', 'StrictHostKeyChecking=yes', '-o', 'UserKnownHostsFile=' + str(pinned_hosts),
             '-o', 'GlobalKnownHostsFile=/dev/null', '-o', 'ConnectTimeout=15',
             '-o', 'ServerAliveInterval=15', '-o', 'ServerAliveCountMax=3',
-            '-o', 'LogLevel=ERROR', '-l', user, host, 'approve-core-outbox-v1',
-        ], input=json.dumps({'event_ids': ids}), text=True, capture_output=True,
-            timeout=1550, check=False, env=child_env)
-        # Never print raw SSH stdout/stderr (including banners or remote diagnostics).
-        report = validate_report(result.stdout, ids)
-        require(result.returncode == 0 if report['code'] == 'PUBLISHED' else result.returncode != 0)
-        return report
+            '-o', 'LogLevel=ERROR', '-l', user, host, command,
+        ], input=json.dumps(payload), text=True, capture_output=True,
+            timeout=timeout, check=False, env=child_env)
+
+
+def connect(ids, settings):
+    result = ssh_request({'event_ids': ids}, settings)
+    # Never print raw SSH stdout/stderr (including banners or remote diagnostics).
+    report = validate_report(result.stdout, ids)
+    require(result.returncode == 0 if report['code'] == 'PUBLISHED' else result.returncode != 0)
+    return report
 
 
 def summary(report):

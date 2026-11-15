@@ -7,6 +7,9 @@ de Infra aprobar de 1 a 50 UUID v4 distintos por ejecución desde **`main`**. Us
 del propietario. Un colaborador con sólo Read/Triage necesita Write.
 GitHub documenta [el requisito de Write y de publicar el workflow en la rama predeterminada](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow).
 
+Para identificar eventos por ticket o consultar metadatos por evento, usar el workflow
+independiente [Query Core Outbox Events](core-outbox-query.md), de sólo lectura.
+
 ## Estado revisado y alcance
 
 - Workspace revisado en `dev`: Infra `2666bcb`, con `origin/HEAD → main`. GitHub confirmó
@@ -112,7 +115,8 @@ chmod 600 "$HOME/.ssh/authorized_keys"
 ```
 
 Usar modos `0700` para `.ssh` y `0600` para `authorized_keys`. La clave sólo acepta el comando
-`approve-core-outbox-v1`, sin argumentos; no permite shell interactiva, PTY ni forwarding.
+`approve-core-outbox-v1` y, tras instalar la [extensión de consulta](core-outbox-query.md),
+`query-core-outbox-v1`, ambos sin argumentos; no permite shell interactiva, PTY ni forwarding.
 Mantener protegidos la cuenta de deployment y los scripts: el acceso general de esa cuenta
 a Docker sigue siendo privilegiado. Obtener y verificar la host key fuera de Actions mediante
 un canal confiable; no confiar en un `ssh-keyscan` hecho automáticamente durante cada ejecución.
