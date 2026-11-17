@@ -1,0 +1,163 @@
+name: m2-qa
+
+services:
+  certificates:
+    image: eclipse-temurin:21-jdk-noble@sha256:06c1f157dacf6b68198bd9a4186dd4c34ef24e65d7bbbe2a0cf8e62571ad38c9
+    entrypoint: [bash, /qa/init-certificates.sh]
+    environment:
+      QA_TRUSTSTORE_PASSWORD: ${QA_TRUSTSTORE_PASSWORD:?Falta QA_TRUSTSTORE_PASSWORD en compose/qa/.env}
+    volumes:
+      - ./init-certificates.sh:/qa/init-certificates.sh:ro
+      - certificates:/certificates
+    network_mode: none
+
+  postgres:
+    image: postgres:17@sha256:0d938e975177bef9f1f61f3f9dbcf2e0aa0a139568f66d3415ed8892eb97f6ac
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?Falta POSTGRES_DB en compose/qa/.env}
+      POSTGRES_USER: ${POSTGRES_USER:?Falta POSTGRES_USER en compose/qa/.env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Falta POSTGRES_PASSWORD en compose/qa/.env}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"']
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
+  rabbitmq:
+    image: rabbitmq:4.2-alpine@sha256:cd4f5c5bb4ffe530dba84770a8d139b8518470cdd385fec9cf014ebfff6bb009
+    hostname: rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: ${QA_RABBIT_USER:?Falta QA_RABBIT_USER en compose/qa/.env}
+      RABBITMQ_DEFAULT_PASS: ${QA_RABBIT_PASSWORD:?Falta QA_RABBIT_PASSWORD en compose/qa/.env}
+      RABBITMQ_DEFAULT_VHOST: core
+    volumes:
+      - ./rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf:ro
+      - certificates:/certificates:ro
+      - rabbit_data:/var/lib/rabbitmq
+    depends_on:
+      certificates:
+        condition: service_completed_successfully
+    healthcheck:
+      test: [CMD, rabbitmq-diagnostics, -q, check_running]
+      interval: 5s
+      timeout: 10s
+      retries: 30
+
+  backend:
+    build:
+      context: ../../../../Backend/Backend-DAMII
+    entrypoint:
+      - bash
+      - -ec
+      - 'exec java -Djavax.net.ssl.trustStore=/certificates/trust.p12 -Djavax.net.ssl.trustStoreType=PKCS12 -Djavax.net.ssl.trustStorePassword="$$QA_TRUSTSTORE_PASSWORD" -jar app.jar'
+    environment:
+      SPRING_PROFILES_ACTIVE: dev,qa-isolated
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:?Falta POSTGRES_DB en compose/qa/.env}
+      SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER:?Falta POSTGRES_USER en compose/qa/.env}
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:?Falta POSTGRES_PASSWORD en compose/qa/.env}
+      SPRING_JPA_SHOW_SQL: "false"
+      TRACKING_CODE_ENCRYPTION_KEY_BASE64: ${TRACKING_CODE_ENCRYPTION_KEY_BASE64:?Falta TRACKING_CODE_ENCRYPTION_KEY_BASE64 en compose/qa/.env}
+      TRACKING_CODE_ENCRYPTION_KEY_ID: ${TRACKING_CODE_ENCRYPTION_KEY_ID:?Falta TRACKING_CODE_ENCRYPTION_KEY_ID en compose/qa/.env}
+      MOCK_CITIZEN_PASSWORD: ${MOCK_CITIZEN_PASSWORD:?Falta MOCK_CITIZEN_PASSWORD en compose/qa/.env}
+      MOCK_AGENT_PASSWORD: ${MOCK_AGENT_PASSWORD:?Falta MOCK_AGENT_PASSWORD en compose/qa/.env}
+      MOCK_AREA_RESPONSIBLE_PASSWORD: ${MOCK_AREA_RESPONSIBLE_PASSWORD:?Falta MOCK_AREA_RESPONSIBLE_PASSWORD en compose/qa/.env}
+      MOCK_ADMIN_PASSWORD: ${MOCK_ADMIN_PASSWORD:?Falta MOCK_ADMIN_PASSWORD en compose/qa/.env}
+      QA_TRUSTSTORE_PASSWORD: ${QA_TRUSTSTORE_PASSWORD:?Falta QA_TRUSTSTORE_PASSWORD en compose/qa/.env}
+      IDENTITY_PROVIDER: MOCK
+      M1_BASE_URL: https://m1.invalid
+      APP_JWT_SECRET: ""
+      SIMULATOR_ENABLED: "false"
+      AI_ENABLED: "false"
+      CORE_OUTBOX_ENABLED: "true"
+      CORE_OUTBOX_AUTO_APPROVE_NEW_EVENTS: "true"
+      CORE_OUTBOX_LOCAL_QA: "true"
+      CORE_OUTBOX_APPROVED_EVENT_IDS: ""
+      CORE_RABBIT_HOST: rabbitmq
+      CORE_RABBIT_PORT: "5671"
+      CORE_RABBIT_VHOST: core
+      CORE_RABBIT_USERNAME: ${QA_RABBIT_USER:?Falta QA_RABBIT_USER en compose/qa/.env}
+      CORE_RABBIT_PASSWORD: ${QA_RABBIT_PASSWORD:?Falta QA_RABBIT_PASSWORD en compose/qa/.env}
+      CORE_OUTBOX_RETRY_DELAY: 5s
+      CORE_INBOX_ENABLED: "true"
+      CORE_INBOX_RECONNECT_DELAY: "1000"
+      ATTACHMENT_STORAGE_ROOT: /var/lib/m2/attachments
+      M2_PUBLIC_BASE_URL: http://localhost:${QA_FRONTEND_PORT:-18081}
+    volumes:
+      - certificates:/certificates:ro
+      - attachment_data:/var/lib/m2/attachments
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD, bash, -ec, 'exec 3<>/dev/tcp/127.0.0.1/8080; printf "GET /actuator/health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n" >&3; IFS= read -r status <&3; [[ "$$status" == *" 200 "* ]]']
+      interval: 3s
+      timeout: 3s
+      retries: 60
+      start_period: 30s
+
+  core-mock:
+    build:
+      context: ../../../../Backend/Backend-DAMII
+      dockerfile: ../../Infra/DA2-m2-infra/compose/qa/CoreMock.Dockerfile
+      additional_contexts:
+        qa: .
+    environment:
+      QA_RABBIT_USER: ${QA_RABBIT_USER:?Falta QA_RABBIT_USER en compose/qa/.env}
+      QA_RABBIT_PASSWORD: ${QA_RABBIT_PASSWORD:?Falta QA_RABBIT_PASSWORD en compose/qa/.env}
+      MOCK_CITIZEN_PASSWORD: ${MOCK_CITIZEN_PASSWORD:?Falta MOCK_CITIZEN_PASSWORD en compose/qa/.env}
+      MOCK_AGENT_PASSWORD: ${MOCK_AGENT_PASSWORD:?Falta MOCK_AGENT_PASSWORD en compose/qa/.env}
+      MOCK_ADMIN_PASSWORD: ${MOCK_ADMIN_PASSWORD:?Falta MOCK_ADMIN_PASSWORD en compose/qa/.env}
+    volumes:
+      - certificates:/certificates:ro
+      - core_data:/state
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD, bash, -ec, 'exec 3<>/dev/tcp/127.0.0.1/8090; printf "GET /health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n" >&3; IFS= read -r status <&3; [[ "$$status" == *" 200 "* ]]']
+      interval: 3s
+      timeout: 3s
+      retries: 30
+      start_period: 15s
+
+  frontend:
+    build:
+      context: ../../../../Frontend/front-desarrollo-apps-2/Front/frontend-atencion-ciudadana
+      args:
+        VITE_API_BASE_URL: /api
+        VITE_IDENTITY_PROVIDER: MOCK
+    ports:
+      - 127.0.0.1:${QA_FRONTEND_PORT:-18081}:80
+      - 127.0.0.1:${QA_BACKEND_PORT:-18080}:18080
+      - 127.0.0.1:${QA_CORE_PORT:-18090}:18090
+    volumes:
+      - ./nginx-qa.conf:/etc/nginx/conf.d/qa.conf:ro
+    networks:
+      - default
+      - edge
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD-SHELL, 'wget -q -O /dev/null http://127.0.0.1/ || exit 1']
+      interval: 3s
+      timeout: 3s
+      retries: 15
+
+networks:
+  default:
+    internal: true
+  # Docker Desktop needs an edge network for host-published ports.
+  # Only static Frontend/Nginx joins it; all integration clients remain isolated.
+  edge:
+
+volumes:
+  certificates:
+  postgres_data:
+  attachment_data:
+  rabbit_data:
+  core_data:

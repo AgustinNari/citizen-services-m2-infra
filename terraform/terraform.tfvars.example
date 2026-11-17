@@ -1,0 +1,21 @@
+# Valores públicos de ejemplo. Copiar a un archivo .tfvars local y revisar antes de usar.
+aws_region       = "sa-east-1"
+availability_zone = "sa-east-1a"
+instance_name     = "da2-m2-dev"
+blueprint_id      = "ubuntu_24_04"
+
+# Ejemplo del objetivo de 2 GB. Confirmar disponibilidad con AWS Support antes de plan/apply.
+bundle_id = "small_3_0"
+
+# Si se omite, Terraform deriva: <instance_name>-static-ip
+# static_ip_name = "da2-m2-dev-static-ip"
+
+# TEST-NET-3: reemplazar por el CIDR público real autorizado antes de plan/apply.
+ssh_allowed_ipv4_cidrs = ["203.0.113.10/32"]
+ssh_allowed_ipv6_cidrs = []
+
+tags = {
+  Environment = "dev"
+  Module      = "m2"
+  Project     = "da2"
+}

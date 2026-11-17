@@ -1,0 +1,40 @@
+title = "M2 secret checks"
+[extend]
+useDefault = true
+
+# No baselines, commit-wide exceptions or whole test-directory exclusions.
+# Literal passwords in the old MOCK provider require a human reuse decision.
+[[rules]]
+id = "m2-historical-mock-password"
+description = "Literal MOCK credential; assess historical reuse before release"
+path = '''(^|/)MockIdentityProvider\.java$'''
+regex = '''(?i)\b[A-Z_]+_PASSWORD\s*=\s*["']([^"'\r\n]{6,})["']'''
+secretGroup = 1
+keywords = ["password"]
+
+# A one-token Password: line in README is a credential, not an instruction
+# such as the current 'Password: valor de MOCK_...'. No literal is allowlisted.
+[[rules]]
+id = "m2-documented-password"
+description = "Documented literal password; assess historical reuse before release"
+path = '''(^|/)README\.md$'''
+regex = '''(?im)^\s*Password:\s*([^\s`<>${}]{6,})[ \t]*\r?$'''
+secretGroup = 1
+keywords = ["password"]
+
+# Verified fixture: Base64 of the public byte sequence 0..31, not a generated
+# runtime key. Require BOTH exact extracted value AND one reviewed file path.
+[[rules]]
+id = "generic-api-key"
+[[rules.allowlists]]
+description = "Public 0..31 fixture in the reviewed CI/test files only"
+condition = "AND"
+regexTarget = "secret"
+regexes = ['''^AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=$''']
+paths = [
+  '''(^|/)\.github/workflows/ci\.yml$''',
+  '''(^|/)tests/test_core_outbox_shell\.py$''',
+  '''(^|/)tests/test_frontend_digest\.py$''',
+  '''(^|/)tests/test_integration_configuration\.py$''',
+  '''(^|/)tests/test_tracking_configuration\.py$''',
+]
