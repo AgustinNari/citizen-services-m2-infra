@@ -1,0 +1,117 @@
+name: Infra CI
+
+on:
+  pull_request:
+    branches:
+      - dev
+      - main
+  push:
+    branches:
+      - dev
+      - main
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  secrets:
+    name: Scan full history and working tree
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Scan secrets (metadata only)
+        run: python3 .github/scripts/check-secrets.py --output "$RUNNER_TEMP/secrets-summary.json"
+      - name: Upload safe secret scan summary
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: secrets-summary
+          path: ${{ runner.temp }}/secrets-summary.json
+          if-no-files-found: error
+
+  validate:
+    name: Validate Compose and Terraform
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      POSTGRES_DB: m2
+      POSTGRES_USER: m2_app
+      POSTGRES_PASSWORD: ci-dummy-password
+      # Synthetic fixture only; never install this material in a persistent environment.
+      TRACKING_CODE_ENCRYPTION_KEY_BASE64: AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=
+      TRACKING_CODE_ENCRYPTION_KEY_ID: ci-v1
+      MOCK_CITIZEN_PASSWORD: ci-citizen-password
+      MOCK_AGENT_PASSWORD: ci-agent-password
+      MOCK_AREA_RESPONSIBLE_PASSWORD: ci-area-password
+      MOCK_ADMIN_PASSWORD: ci-admin-password
+      SIMULATOR_ENABLED: "false"
+      ATTACHMENT_STORAGE_ROOT: /var/lib/m2/attachments
+      BACKEND_IMAGE: ghcr.io/juanmaguida/backend-damii:sha-0000000000000000000000000000000000000000
+      FRONTEND_IMAGE: ghcr.io/santimussi/front-desarrollo-apps-2:sha-0000000000000000000000000000000000000000
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Validate release workflow policy
+        run: python3 -B -m unittest discover -s .github/tests -v
+
+      - name: Validate local Compose configuration
+        working-directory: compose
+        env:
+          FRONTEND_PORT: "8081"
+        run: docker compose config --quiet
+
+      - name: Validate Lightsail Compose configuration
+        working-directory: compose
+        env:
+          FRONTEND_PORT: "80"
+        run: docker compose --env-file .env.example --env-file images.env.example -f compose.deploy.yml config --quiet
+
+      - name: Validate Bash and exercise deployment and TLS smoke failures
+        run: |
+          for script in scripts/*.sh; do bash -n "$script"; done
+          python3 -m unittest discover -s tests -v
+
+      - name: Validate Caddy configuration without issuing certificates
+        run: |
+          docker run --rm --network none \
+            -e HTTPS_HOSTNAME=54-232-233-237.sslip.io -e LEGACY_HTTP_IP=54.232.233.237 \
+            -v "$PWD/caddy/Caddyfile:/etc/caddy/Caddyfile:ro" \
+            caddy:2.11.7-alpine caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: "1.16.3"
+          terraform_wrapper: false
+
+      - name: Check Terraform formatting
+        working-directory: terraform
+        run: terraform fmt -check
+
+      - name: Initialize Terraform without backend
+        working-directory: terraform
+        run: terraform init -backend=false -input=false
+
+      - name: Validate Terraform configuration
+        working-directory: terraform
+        run: terraform validate
+
+      - name: Record validated revision
+        if: always()
+        env:
+          VALIDATED_REF: ${{ github.ref }}
+          VALIDATED_SHA: ${{ github.sha }}
+        run: printf 'Infra ref=%s commit=%s\n' "$VALIDATED_REF" "$VALIDATED_SHA" >> "$GITHUB_STEP_SUMMARY"

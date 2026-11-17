@@ -1,3 +1,23 @@
 .env
 .env.*
 !.env.example
+compose/images.env
+compose/.images.env.candidate.*
+
+# Terraform
+.terraform/
+terraform.tfstate
+terraform.tfstate.*
+*.tfvars
+!terraform.tfvars.example
+
+# Claves privadas y certificados
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa*
+
+# Disposable local validators / reports, never deployment input.
+/.https-validation/
+__pycache__/
