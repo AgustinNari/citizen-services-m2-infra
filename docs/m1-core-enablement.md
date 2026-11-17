@@ -40,8 +40,10 @@ imprimirlo, con permisos restrictivos (0600 y directorio de acceso limitado):
 - `APP_JWT_SECRET`: material que M1 utiliza para HS256, en Base64 y con al menos
   32 bytes decodificados. Obtenerlo por canal privado; no generar una clave distinta
   para hacer pasar el arranque ni confundirlo con la clave de tracking.
-- `M1_CONNECT_TIMEOUT=5s`, `M1_READ_TIMEOUT=30s` por defecto; considerar el arranque
-  en frío de M1 durante las pruebas. El proxy actual no requiere otro host público.
+- `M1_CONNECT_TIMEOUT=5s`, `M1_READ_TIMEOUT=5s` por defecto. El Backend admite
+  únicamente valores entre 1 ms y 5 s. Antes de integrar esa versión, comprobar
+  ambos valores efectivos del entorno existente: un `.env` explícito prevalece
+  sobre los defaults y este cambio local no actualiza Lightsail.
 - `CORE_RABBIT_HOST`, `CORE_RABBIT_PORT=5671`, `CORE_RABBIT_VHOST=core`,
   `CORE_RABBIT_USERNAME` y `CORE_RABBIT_PASSWORD` proporcionados privadamente por Core.
   El host es DNS, sin `amqps://`, usuario o contraseña en una URL.

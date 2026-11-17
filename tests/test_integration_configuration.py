@@ -7,6 +7,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -96,8 +97,10 @@ class IntegrationComposeTests(unittest.TestCase):
         if result.returncode:
             raise unittest.SkipTest('Runnable Docker Compose CLI required')
 
-    def render(self, filename, **overrides):
+    def render(self, filename, env_file=None, **overrides):
         env = os.environ.copy()
+        for key in ('M1_CONNECT_TIMEOUT', 'M1_READ_TIMEOUT'):
+            env.pop(key, None)
         env.update(POSTGRES_DB='synthetic', POSTGRES_USER='synthetic', POSTGRES_PASSWORD='synthetic-password',
                    TRACKING_CODE_ENCRYPTION_KEY_BASE64=KEY, TRACKING_CODE_ENCRYPTION_KEY_ID='test-only',
                    MOCK_CITIZEN_PASSWORD='synthetic', MOCK_AGENT_PASSWORD='synthetic', MOCK_AREA_RESPONSIBLE_PASSWORD='synthetic',
@@ -109,7 +112,7 @@ class IntegrationComposeTests(unittest.TestCase):
                    BACKEND_IMAGE='example.invalid/backend:test', FRONTEND_IMAGE='example.invalid/frontend:test')
         env.update(overrides)
         result = subprocess.run(['docker', 'compose', '--project-name', 'integration-validation',
-                                 '--env-file', str(ROOT / 'compose/.env.example'), '-f', str(ROOT / 'compose' / filename),
+                                 '--env-file', str(env_file or ROOT / 'compose/.env.example'), '-f', str(ROOT / 'compose' / filename),
                                  'config', '--format', 'json'], cwd=ROOT / 'compose', env=env, capture_output=True, text=True, timeout=30)
         self.assertEqual(result.returncode, 0, 'Compose interpolation failed with synthetic inputs')
         return json.loads(result.stdout)
@@ -125,6 +128,19 @@ class IntegrationComposeTests(unittest.TestCase):
                 self.assertEqual(env[key], 'false')
             self.assertIn('postgres_data', config['volumes'])
             self.assertIn('attachment_data', config['volumes'])
+
+    def test_m1_timeout_defaults_match_backend_five_second_limit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            empty = Path(directory) / 'empty.env'
+            empty.write_text('')
+            for filename in ('compose.yml', 'compose.deploy.yml'):
+                for env_file in (None, empty):
+                    with self.subTest(compose=filename, example=env_file is None):
+                        env = self.render(filename, env_file=env_file)['services']['backend']['environment']
+                        self.assertEqual(env['M1_CONNECT_TIMEOUT'], '5s')
+                        self.assertEqual(env['M1_READ_TIMEOUT'], '5s')
+                configured = self.render(filename, M1_READ_TIMEOUT='3s')['services']['backend']['environment']
+                self.assertEqual(configured['M1_READ_TIMEOUT'], '3s')
 
     def test_m1_and_independent_manual_automatic_and_consumer_settings_reach_only_backend(self):
         for filename in ('compose.yml', 'compose.deploy.yml'):
