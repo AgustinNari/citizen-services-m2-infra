@@ -19,6 +19,122 @@ DA2/
 - Docker
 - Docker Compose plugin
 
+## Arranque aislado de QA y G1
+
+Para probar el sistema completo sin M1/Core reales, usar **`compose/qa`**. Requiere
+Git, Docker con contenedores Linux y Compose **2.17 o superior** con BuildKit.
+Java, Maven, Node, certificados y broker se preparan en contenedores. La primera
+compilación necesita Internet para descargar imágenes y dependencias; los servicios
+Backend, broker, base y Core simulado se ejecutan luego en una red Docker `internal`,
+sin salida a Internet. Sólo Nginx/Frontend se conecta además a una red de borde para
+publicar los puertos de loopback en Docker Desktop; también proxifica salud y controles QA.
+Prever al menos 8 GB de RAM para Docker y espacio para imágenes y compilaciones.
+
+Clonar los tres repositorios con estos nombres y estructura, desde una carpeta vacía:
+
+```bash
+git clone --branch dev https://github.com/JuanmaGuida/Backend-DAMII.git Backend/Backend-DAMII
+git clone --branch dev https://github.com/SantiMussi/front-desarrollo-apps-2.git Frontend/front-desarrollo-apps-2
+git clone --branch dev https://github.com/AgustinNari/citizen-services-m2-infra.git Infra/DA2-m2-infra
+cd Infra/DA2-m2-infra/compose/qa
+```
+
+Los nombres de carpetas son parte del procedimiento: los contextos de build son
+relativos, sin rutas particulares de Windows. Usar las revisiones acordadas de los
+tres repositorios para la entrega; hasta publicar los cambios G1, éstos deben estar
+presentes también en la copia de Infra utilizada para probarlos.
+
+Preparar `.env` desde `.env.example`: completar `POSTGRES_PASSWORD`, las cuatro
+`MOCK_*_PASSWORD`, `QA_RABBIT_PASSWORD`, `QA_TRUSTSTORE_PASSWORD` y una clave de
+seguimiento Base64 de **32 bytes aleatorios**. Mantener DB/usuario/ID de clave con
+los valores locales del ejemplo, o completar valores propios. No copiar el `.env`
+de Lightsail. No dejar passwords vacías ni reutilizar contraseñas históricas.
+
+Alternativamente, este paso de configuración funciona en Bash y PowerShell y crea
+`.env` con todos los secretos aleatorios directamente en el archivo, sin mostrarlos:
+
+```bash
+docker run --rm --network none --mount "type=bind,source=$PWD,target=/qa" --workdir /qa --entrypoint bash eclipse-temurin:21-jdk-noble@sha256:06c1f157dacf6b68198bd9a4186dd4c34ef24e65d7bbbe2a0cf8e62571ad38c9 /qa/prepare-env.sh
+```
+
+El preparador se niega a sobrescribir un `.env` existente. Se pueden editar los
+puertos `QA_*_PORT` antes del arranque. Las contraseñas no se imprimen; evitar
+publicar `docker compose config`, `docker inspect` o volcados del entorno, que
+pueden contenerlas. `.env` está ignorado por Git y excluido del contexto de build.
+
+Con la configuración completa, **un único comando** construye y levanta todo:
+
+```bash
+docker compose up --build --wait --wait-timeout 600
+```
+
+Compose rechaza variables obligatorias vacías indicando su nombre. El comando
+espera PostgreSQL, RabbitMQ con TLS, Core simulado, Backend con migraciones y
+Frontend saludables. `--wait-timeout` limita la espera de salud, no la compilación:
+medir desde la ejecución del comando hasta su terminación para comprobar los 15 minutos.
+
+Accesos predeterminados, publicados únicamente en loopback:
+
+| Servicio | Dirección | Uso |
+|---|---|---|
+| Frontend | `http://localhost:18081` | Portal y API mediante `/api` |
+| Salud Backend vía Nginx | `http://127.0.0.1:18080/actuator/health` | Debe responder HTTP 200 y `UP` |
+| Core simulado | `http://127.0.0.1:18090/health` | Debe responder HTTP 200 y `UP` |
+
+Ingresar en el Frontend con `citizen@example.test`, `agent@example.test`,
+`area.responsible@example.test` o `module.admin@example.test`, y la contraseña de
+`MOCK_CITIZEN_PASSWORD`, `MOCK_AGENT_PASSWORD`, `MOCK_AREA_RESPONSIBLE_PASSWORD` o
+`MOCK_ADMIN_PASSWORD`, respectivamente. Son identidades locales existentes; no
+son cuentas M1. El catálogo y los roles se inicializan con las migraciones y el perfil `dev`.
+
+Comprobación funcional repetible, desde `compose/qa` y sin Java instalado en el host:
+
+```bash
+docker compose exec -T core-mock java --class-path "/core/BOOT-INF/lib/*" /core/VerifyG1.java
+```
+
+Debe finalizar con JSON `status: PASS`: comprueba Frontend/API, login MOCK ciudadano,
+agente y administrador. Prepara mediante la API administrativa un tipo sintético
+`QA_G1_EXTERNAL_ANONYMOUS`, sin cambiar los tipos existentes (el catálogo inicial
+no habilita anónimos), y su formulario de una pregunta. Comprueba creación anónima,
+revisión, derivación externa y publicación Outbox por
+AMQPS, recepción/validación en Core simulado, envío de `updateTicketStatus/STARTED`
+por AMQPS y aplicación del Inbox hasta `IN_PROGRESS`. También rechaza un sobre con
+campo no declarado y comprueba deduplicación del Core simulado. Crea un ticket
+sintético nuevo en cada ejecución, reutiliza ese tipo QA y sólo imprime IDs y resultados.
+
+El recorrido es anónimo porque el publicador real de M2 exige identidad M1 verificada
+para eventos identificados: no se debilita esa regla ni se transforma un usuario MOCK
+en M1. La publicación automática local requiere exclusivamente los perfiles `dev`
+y `qa-isolated`, `CORE_OUTBOX_LOCAL_QA=true`, identidad MOCK, host `rabbitmq`, broker
+habilitado, simulador apagado y lista manual vacía. Esa excepción sólo admite eventos
+anónimos sin `citizenId`; no marca su procedencia como M1. Sus guardas se prueban al
+construir el Core simulado. Sin ese opt-in se conserva la política existente.
+El Frontend y Backend usan siempre `MOCK`, M1 apunta a `m1.invalid`, IA y
+simulador interno están apagados y RabbitMQ apunta exclusivamente a `rabbitmq:5671`.
+Estas selecciones no se heredan del shell ni del `.env` productivo.
+
+El inicializador genera una CA descartable, certificado de servidor con SAN
+`rabbitmq` y truststore Java. Backend y Core simulado verifican certificado y hostname;
+no usan trust-all. La CA privada se elimina al terminar el inicializador. Las claves
+runtime, certificados, datos y adjuntos permanecen en volúmenes del proyecto **`m2-qa`**,
+separados de desarrollo y Lightsail. No hay puertos de PostgreSQL ni RabbitMQ publicados.
+
+El Core simulado reutiliza los clientes AMQP/Jackson y los schemas `v1.78` de la
+misma imagen Backend: valida `ticketCreated`, `ticketUpdated` y `updateTicketStatus`,
+persiste recibos sin payload personal y confirma los mensajes después de persistir.
+Sus rutas `/qa/events` y `/qa/publish` son controles exclusivos del laboratorio, no
+endpoints del Core real. Usa una cola local `q.qa.rejected` para diagnóstico; no
+implementa el catálogo, permisos, cadena completa de reintentos ni API DLQ del Core.
+G1 y este recorrido no acreditan por sí solos todas las pruebas de resiliencia.
+
+Para detener sin borrar datos: `docker compose down`. Para volver a probar desde
+cero, revisar que se está en `compose/qa` y ejecutar `docker compose down --volumes`:
+**borra únicamente los datos descartables de ese proyecto QA**. No cambiar passwords
+de PostgreSQL/RabbitMQ/truststore con volúmenes existentes; restaurarlas o recrear ese
+entorno descartable. Los certificados vencen en 30 días. Nunca usar estos archivos
+como configuración de `compose.deploy.yml` ni copiarlos a Lightsail.
+
 ## Configuración local
 
 Desde el repositorio Infra:
@@ -120,14 +236,14 @@ Para aprobar UUID del Outbox desde GitHub Actions con permisos Write de Infra, c
 [configuración inicial, publicación en main y operación](docs/core-outbox-approval.md).
 La herramienta usa aprobación explícita, SSH restringido y el lock compartido de deployments.
 
-## Alcance funcional pendiente
+## Alcance de la verificación
 
-Este bloque garantiza build, arranque, migraciones y proxy, pero no completa los endpoints
-funcionales que el Frontend espera y el Backend aún no implementa. Esas divergencias no
-impiden desplegar el stack; algunas pantallas pueden recibir `401`, `404` o `405` hasta que
-se resuelvan en tareas funcionales posteriores.
+El arranque comprueba servicios, migraciones y proxy. `VerifyG1.java` verifica el
+recorrido de integración aislado descrito arriba. Las demás historias y pantallas
+deben contrastarse con el plan de QA de la versión acordada; este procedimiento
+no sustituye esa validación funcional ni la homologación con M1/Core reales.
 
-## Preparación de G1 y validación de release
+## Desarrollo básico y validación de release
 
 El comando local anterior espera PostgreSQL sano, Backend con HTTP 200 en
 `/actuator/health` y luego Frontend sano. Los usuarios MOCK son
@@ -136,13 +252,9 @@ El comando local anterior espera PostgreSQL sano, Backend con HTTP 200 en
 cuatro variables `MOCK_*_PASSWORD`. El modo local predeterminado es MOCK, con
 simulador y Core deshabilitados. No usar credenciales M1 reales para pruebas locales.
 
-G1 queda en preparación: no se agregó broker, mock M1/Core ni simulador auxiliar.
-Cuando se estabilicen los contratos, acordar dependencias locales aisladas,
-TLS/confianza, topología retry/DLQ y datos de prueba. Después un tercero debe clonar
-las revisiones acordadas, configurar secretos sin imprimirlos y cronometrar el
-arranque y flujo completo en una máquina limpia en <=15 minutos. El README y los
-componentes básicos actuales no demuestran por sí solos ese requisito.
-Lightsail utiliza exclusivamente `compose.deploy.yml`; no aplicar allí estos pasos.
+Este Compose básico no incluye broker. Para G1 completo usar el entorno aislado
+`compose/qa` documentado arriba y registrar su tiempo con las revisiones de entrega.
+Lightsail utiliza exclusivamente `compose.deploy.yml`; no aplicar allí los pasos de QA.
 
 Los tags `v*` ejecutan Infra CI sin despliegue ni cambios AWS. Para QA se registra
 ref/SHA y resumen de secretos. Sonar, ZAP y homologación real con Core siguen pendientes.
