@@ -58,12 +58,15 @@ public class CoreMock {
         return STATE.resolve(UUID.fromString(event.path("eventId").asText()).toString() + ".json");
     }
 
-    static void record(JsonNode event, String direction) throws IOException {
+    static synchronized void record(JsonNode event, String direction) throws IOException {
         var metadata = JSON.createObjectNode();
         for (String key : List.of("eventId", "eventType", "correlationId", "causationId"))
             if (event.has(key)) metadata.set(key, event.get(key));
         metadata.put("ticketId", event.path("data").path("ticketId").asText());
         metadata.put("direction", direction);
+        metadata.put("effects", 1);
+        metadata.put("deliveries", Files.exists(receipt(event))
+                ? JSON.readTree(Files.readAllBytes(receipt(event))).path("deliveries").asInt(1) + 1 : 1);
         if (event.path("data").has("updateType")) metadata.put("updateType", event.path("data").path("updateType").asText());
         Path temporary = Files.createTempFile(STATE, "receipt-", ".tmp");
         try {
@@ -72,7 +75,7 @@ public class CoreMock {
         } finally { Files.deleteIfExists(temporary); }
     }
 
-    static void connect() throws Exception {
+    static ConnectionFactory factory() throws Exception {
         KeyStore trust = KeyStore.getInstance(KeyStore.getDefaultType());
         trust.load(null, null);
         try (InputStream ca = Files.newInputStream(Path.of("/certificates/ca.crt"))) {
@@ -89,7 +92,11 @@ public class CoreMock {
         factory.useSslProtocol(tls); factory.enableHostnameVerification();
         factory.setConnectionTimeout(5000); factory.setHandshakeTimeout(5000);
         factory.setRequestedHeartbeat(10); factory.setNetworkRecoveryInterval(2000);
-        connection = factory.newConnection("m2-qa-core");
+        return factory;
+    }
+
+    static void connect() throws Exception {
+        connection = factory().newConnection("m2-qa-core");
         consumer = connection.createChannel();
         consumer.exchangeDeclare("muni.inbox", "fanout", true);
         consumer.exchangeDeclare("qa.rejected", "fanout", true);
@@ -105,15 +112,23 @@ public class CoreMock {
                 if (delivery.getBody().length > 1048576) throw new IllegalArgumentException();
                 JsonNode event = JSON.readTree(delivery.getBody());
                 validate(event, false);
-                if (!Files.exists(receipt(event))) record(event, "M2_TO_CORE");
+                record(event, "M2_TO_CORE");
                 consumer.basicAck(delivery.getEnvelope().getDeliveryTag(), false);
-            } catch (IllegalArgumentException invalid) {
+            } catch (IllegalArgumentException | com.fasterxml.jackson.core.JsonProcessingException invalid) {
                 consumer.basicNack(delivery.getEnvelope().getDeliveryTag(), false, false);
                 System.err.println("QA_CORE_EVENT_REJECTED");
             } catch (Exception unavailable) {
-                // No ACK on persistence/connection failure; close and allow redelivery.
+                // No ACK on persistence/connection failure. Throttle storage failures
+                // before requeueing, so a read-only/full volume cannot create a hot loop.
                 System.err.println("QA_CORE_PERSISTENCE_OR_CHANNEL_FAILURE");
-                try { consumer.abort(); } catch (Exception ignored) { }
+                // Do not abort the autorecovering channel on a transient broker disconnect.
+                // If persistence fails on an open channel, requeue the unacknowledged delivery.
+                try {
+                    Thread.sleep(5000);
+                    if (consumer.isOpen()) consumer.basicNack(delivery.getEnvelope().getDeliveryTag(), false, true);
+                }
+                catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); }
+                catch (Exception ignored) { }
             }
         }, tag -> {});
     }
@@ -173,6 +188,40 @@ public class CoreMock {
     }
 
     public static void main(String[] args) throws Exception {
+        if (args.length == 1 && args[0].equals("replay-int04")) {
+            // Explicit local CLI only: replay already recorded events over real AMQPS.
+            // No HTTP bypass of the normal /qa/publish idempotency contract.
+            JsonNode batch = JSON.readTree(System.in);
+            if (!batch.isArray() || batch.size() < 1 || batch.size() > 400) throw new IllegalArgumentException();
+            for (JsonNode item : batch) {
+                JsonNode event = item.path("event");
+                String direction = item.path("direction").asText();
+                if (!Set.of("M2_TO_CORE", "CORE_TO_M2").contains(direction)) throw new IllegalArgumentException();
+                validate(event, direction.equals("CORE_TO_M2"));
+                JsonNode known = JSON.readTree(Files.readAllBytes(receipt(event)));
+                for (String key : List.of("eventId", "eventType", "correlationId", "causationId"))
+                    if (!known.path(key).equals(event.path(key))) throw new IllegalArgumentException();
+                if (!known.path("direction").asText().equals(direction)
+                        || !known.path("ticketId").asText().equals(event.path("data").path("ticketId").asText()))
+                    throw new IllegalArgumentException();
+            }
+            try (Connection replay = factory().newConnection("m2-qa-int04-replay"); Channel channel = replay.createChannel()) {
+                channel.confirmSelect();
+                for (JsonNode item : batch) {
+                    JsonNode event = item.path("event");
+                    boolean incoming = item.path("direction").asText().equals("CORE_TO_M2");
+                    var properties = new AMQP.BasicProperties.Builder().contentType("application/json")
+                            .deliveryMode(2).messageId(event.path("eventId").asText())
+                            .type(event.path("eventType").asText()).userId(System.getenv("QA_RABBIT_USER")).build();
+                    for (int copy = 0; copy < 2; copy++)
+                        channel.basicPublish(incoming ? "" : "muni.inbox", incoming ? "q.atencion-ciudadana" : "",
+                                true, properties, JSON.writeValueAsBytes(event));
+                }
+                channel.waitForConfirmsOrDie(5000);
+            }
+            System.out.println("INT04_REPLAY_CONFIRMED copies=" + batch.size() * 2);
+            return;
+        }
         try { connect(); }
         catch (Exception unavailable) { System.err.println("QA_CORE_STARTUP_FAILED: revisar RabbitMQ y certificados locales"); System.exit(1); }
         HttpServer server = HttpServer.create(new InetSocketAddress("0.0.0.0", 8090), 0);

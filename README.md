@@ -128,6 +128,44 @@ endpoints del Core real. Usa una cola local `q.qa.rejected` para diagnóstico; n
 implementa el catálogo, permisos, cadena completa de reintentos ni API DLQ del Core.
 G1 y este recorrido no acreditan por sí solos todas las pruebas de resiliencia.
 
+### INT-04: caída y recuperación de RabbitMQ local
+
+Con el mismo entorno QA saludable (`docker compose up -d --build --wait`) y Python 3
+en el host, ejecutar desde `compose/qa`:
+
+```bash
+python demo-int04.py --tickets 3
+```
+
+La demo verifica primero el contexto Docker local, los contenedores `m2-qa` y el
+aislamiento. Detiene sólo su RabbitMQ durante al menos 120 segundos, crea N tickets
+anónimos mediante la API, los revisa y deriva al área simulada. Reutiliza el tipo
+sintético G1: para este recorrido corresponde **un evento `ROUTED` por ticket**.
+Comprueba tickets persistidos y Outbox `PENDING`, reinicia el broker y espera la
+publicación con los mismos `eventId` y payloads, sin reiniciar Backend, PostgreSQL
+ni Core simulado. Después envía N actualizaciones contractuales `STARTED` y verifica
+Inbox, actividad, mensaje y estado `IN_PROGRESS`.
+
+Finalmente reenvía físicamente dos copias de cada evento en ambos sentidos por
+AMQPS: exige un solo recibo/efecto en Core y un solo Inbox, actividad y mensaje por
+actualización, colas drenadas y ningún rechazo adicional. La entrega del transporte
+puede repetirse; la comprobación exige efectos idempotentes. El CLI de replay vive
+sólo en el Core simulado y admite eventos previamente registrados en ese laboratorio.
+
+Debe terminar con `INT-04 PASS` y conteos JSON. Cada ejecución usa UUID nuevos y
+comprueba exclusivamente su lote; conserva los datos para inspección y restaura
+el broker en caso de error o interrupción normal. No ejecutar dos demos simultáneas.
+`--tickets` admite 1..100; `--outage-seconds` cambia la duración y
+`--timeout-seconds` el plazo de recuperación (240s por defecto). Una caída extensa
+puede requerir aumentar este plazo: Outbox conserva el backoff exponencial, con
+tope de una hora. Las fallas de transporte/confirmación siguen pendientes hasta
+recuperarse; payloads inválidos y rechazos que agotan los intentos siguen en `FAILED`.
+Los errores identificados de autenticación, validación TLS, protocolo o topología
+usan `PUBLICATION_ERROR` y conservan el máximo de intentos; no se confunden con una
+caída de transporte. El Core simulado también pausa cinco segundos antes de
+reencolar por fallas de almacenamiento, evitando un ciclo de reentregas inmediato.
+No modificar las variables de publicación ni usar este script en otro Compose.
+
 Para detener sin borrar datos: `docker compose down`. Para volver a probar desde
 cero, revisar que se está en `compose/qa` y ejecutar `docker compose down --volumes`:
 **borra únicamente los datos descartables de ese proyecto QA**. No cambiar passwords
