@@ -1,6 +1,8 @@
 # Infraestructura M2
 
-Este repositorio contiene la configuración local y operativa de AWS Lightsail DEV. El Compose local construye desde los repositorios vecinos; el Compose de deploy consume exclusivamente imágenes privadas e inmutables de GHCR. Los repositorios deben conservar esta estructura relativa para el desarrollo local:
+Para reproducir la entrega desde cero, seguir [Arranque aislado de QA y G1](#arranque-aislado-de-qa-y-g1).
+
+Este repositorio contiene la configuración local y operativa de AWS Lightsail DEV. El Compose de deploy consume exclusivamente imágenes privadas e inmutables de GHCR. El Compose de desarrollo (`compose/compose.yml`) usa esta estructura:
 
 ```text
 DA2/
@@ -30,28 +32,30 @@ sin salida a Internet. Sólo Nginx/Frontend se conecta además a una red de bord
 publicar los puertos de loopback en Docker Desktop; también proxifica salud y controles QA.
 Prever al menos 8 GB de RAM para Docker y espacio para imágenes y compilaciones.
 
-Clonar los tres repositorios con estos nombres y estructura, desde una carpeta vacía:
+Desde una carpeta vacía, clonar los tres repositorios uno al lado del otro,
+con los mismos nombres que en `NuevoV1`. Se requiere acceso de lectura a los
+repositorios de GitHub.
 
 ```bash
-git clone --branch dev https://github.com/JuanmaGuida/Backend-DAMII.git Backend/Backend-DAMII
-git clone --branch dev https://github.com/SantiMussi/front-desarrollo-apps-2.git Frontend/front-desarrollo-apps-2
-git clone --branch main https://github.com/AgustinNari/DA2-m2-infra.git Infra/DA2-m2-infra
-cd Infra/DA2-m2-infra/compose/qa
+git clone --branch master https://github.com/JuanmaGuida/Backend-DAMII.git Backend-DAMII
+git clone --branch main https://github.com/SantiMussi/front-desarrollo-apps-2.git front-desarrollo-apps-2
+git clone --branch main https://github.com/AgustinNari/citizen-services-m2-infra.git citizen-services-m2-infra
+cd citizen-services-m2-infra/compose/qa
 ```
 
-Los nombres de carpetas son parte del procedimiento: los contextos de build son
-relativos, sin rutas particulares de Windows. Usar las revisiones acordadas de los
-tres repositorios para la entrega. `main` es la rama estable de Infra; los cambios
-en `dev` deben revisarse e integrarse antes de publicarlos.
+Conservar los nombres indicados. Los contextos de build de QA se resuelven hacia
+esos clones hermanos. Para reproducir una entrega, usar las revisiones publicadas
+para esa versión y registrar el SHA de los tres repositorios antes de arrancar.
 
-Preparar `.env` desde `.env.example`: completar `POSTGRES_PASSWORD`, las cuatro
+Como configuración previa manual, ejecutar `cp .env.example .env` desde
+`compose/qa` y completar en `.env` `POSTGRES_PASSWORD`, las cuatro
 `MOCK_*_PASSWORD`, `QA_RABBIT_PASSWORD`, `QA_TRUSTSTORE_PASSWORD` y una clave de
 seguimiento Base64 de **32 bytes aleatorios**. Mantener DB/usuario/ID de clave con
 los valores locales del ejemplo, o completar valores propios. No copiar el `.env`
 de Lightsail. No dejar passwords vacías ni reutilizar contraseñas históricas.
 
-Alternativamente, este paso de configuración funciona en Bash y PowerShell y crea
-`.env` con todos los secretos aleatorios directamente en el archivo, sin mostrarlos:
+Para generar `.env` con valores aleatorios, se puede usar este comando en Bash
+o PowerShell en lugar del paso manual. Escribe los valores directamente al archivo:
 
 ```bash
 docker run --rm --network none --mount "type=bind,source=$PWD,target=/qa" --workdir /qa --entrypoint bash eclipse-temurin:21-jdk-noble@sha256:06c1f157dacf6b68198bd9a4186dd4c34ef24e65d7bbbe2a0cf8e62571ad38c9 /qa/prepare-env.sh
@@ -68,10 +72,13 @@ Con la configuración completa, **un único comando** construye y levanta todo:
 docker compose up --build --wait --wait-timeout 600
 ```
 
-Compose rechaza variables obligatorias vacías indicando su nombre. El comando
+Compose rechaza variables obligatorias ausentes o vacías indicando su nombre. El comando
 espera PostgreSQL, RabbitMQ con TLS, Core simulado, Backend con migraciones y
 Frontend saludables. `--wait-timeout` limita la espera de salud, no la compilación:
 medir desde la ejecución del comando hasta su terminación para comprobar los 15 minutos.
+Para una medición en frío, preparar `.env` manualmente en un entorno sin imágenes,
+caché de build ni volúmenes previos de QA. El generador opcional ya descarga o
+reutiliza la imagen base de Java.
 
 Accesos predeterminados, publicados únicamente en loopback:
 
