@@ -47,7 +47,7 @@ services:
 
   backend:
     build:
-      context: ../../../../Backend/Backend-DAMII
+      context: ../../../Backend-DAMII
     entrypoint:
       - bash
       - -ec
@@ -101,8 +101,8 @@ services:
 
   core-mock:
     build:
-      context: ../../../../Backend/Backend-DAMII
-      dockerfile: ../../Infra/DA2-m2-infra/compose/qa/CoreMock.Dockerfile
+      context: ../../../Backend-DAMII
+      dockerfile: ../citizen-services-m2-infra/compose/qa/CoreMock.Dockerfile
       additional_contexts:
         qa: .
     environment:
@@ -126,7 +126,7 @@ services:
 
   frontend:
     build:
-      context: ../../../../Frontend/front-desarrollo-apps-2/Front/frontend-atencion-ciudadana
+      context: ../../../front-desarrollo-apps-2/Front/frontend-atencion-ciudadana
       args:
         VITE_API_BASE_URL: /api
         VITE_IDENTITY_PROVIDER: MOCK

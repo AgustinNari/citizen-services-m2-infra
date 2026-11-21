@@ -72,14 +72,16 @@ class QaStartupTests(unittest.TestCase):
                                         ('backend', 'postgres', 'service_healthy'),
                                         ('frontend', 'backend', 'service_healthy')]:
             self.assertEqual(services[name]['depends_on'][parent]['condition'], condition)
-        # Infra CI checks out this repository alone. Verify the portable layout here;
-        # Dockerfile existence is checked by the real three-repository Compose build.
-        layout = ROOT.parent.parent
-        for name, relative in {'backend': 'Backend/Backend-DAMII',
-                               'frontend': 'Frontend/front-desarrollo-apps-2/Front/frontend-atencion-ciudadana'}.items():
-            self.assertEqual(Path(services[name]['build']['context']).resolve(), (layout / relative).resolve())
+        # Infra CI checks out this repository alone, so sibling sources need not exist there.
+        for name, relative in {'backend': 'Backend-DAMII',
+                               'core-mock': 'Backend-DAMII',
+                               'frontend': 'front-desarrollo-apps-2/Front/frontend-atencion-ciudadana'}.items():
+            self.assertEqual(Path(services[name]['build']['context']).resolve(), (ROOT.parent / relative).resolve())
+        core_build = services['core-mock']['build']
+        self.assertEqual((Path(core_build['context']) / core_build['dockerfile']).resolve(),
+                         QA / 'CoreMock.Dockerfile')
         self.assertIn('-Djavax.net.ssl.trustStore=', ' '.join(services['backend']['entrypoint']))
-        self.assertEqual(Path(services['core-mock']['build']['additional_contexts']['qa']), QA)
+        self.assertEqual(Path(core_build['additional_contexts']['qa']).resolve(), QA)
 
 
 if __name__ == '__main__':
