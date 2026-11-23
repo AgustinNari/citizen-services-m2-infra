@@ -6,6 +6,8 @@
 }
 
 {$HTTPS_HOSTNAME} {
+	header >Strict-Transport-Security "max-age=86400"
+
 	# A public CA is required. No tls internal / self-signed fallback.
 	tls {
 		issuer acme {

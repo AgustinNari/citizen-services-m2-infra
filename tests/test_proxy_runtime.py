@@ -1,7 +1,6 @@
 """Optional real proxy tests. Set CADDY_BIN, NGINX_BIN and FRONTEND_NGINX_CONFIG.
 
-Uses only loopback, ephemeral ports and an echo backend; never contacts ACME/AWS.
-The real Caddyfile is adapted to HTTP solely to exercise forwarding locally.
+Uses only loopback, ephemeral ports, a disposable TLS CA and an echo backend.
 Public certificate issuance is deliberately outside this test's scope.
 """
 import http.client
@@ -11,6 +10,7 @@ import os
 from pathlib import Path
 import re
 import socket
+import ssl
 import subprocess
 import tempfile
 import threading
@@ -38,6 +38,8 @@ class Echo(BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
         self.send_header('Content-Length', str(len(data)))
+        self.send_header('Content-Security-Policy', "default-src 'none'")
+        self.send_header('Strict-Transport-Security', 'max-age=31536000; includeSubDomains')
         self.end_headers()
         self.wfile.write(data)
 
@@ -84,27 +86,33 @@ class ProxyRuntimeTests(unittest.TestCase):
                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         cls.addClassCleanup(cls.stop, nginx)
         caddy = (Path(__file__).resolve().parents[1] / 'caddy/Caddyfile').read_text()
-        caddy = caddy.replace('{\n', '{\n\tadmin off\n', 1)
-        caddy = caddy.replace('{$HTTPS_HOSTNAME} {', f'http://127.0.0.1:{cls.edge_port} {{', 1)
-        caddy = re.sub(r'\ttls \{.*?\n\t\}', '', caddy, count=1, flags=re.S)
+        caddy = caddy.replace('{\n', '{\n\tadmin off\n\tskip_install_trust\n\tauto_https disable_redirects\n', 1)
+        caddy = caddy.replace('{$HTTPS_HOSTNAME} {', f'https://127.0.0.1:{cls.edge_port} {{', 1)
+        caddy = re.sub(r'\ttls \{.*?\n\t\}', '\ttls internal', caddy, count=1, flags=re.S)
         caddy = caddy.replace('frontend:8082', f'127.0.0.1:{cls.private_port}')
         caddy = caddy.replace('http://{$LEGACY_HTTP_IP}', f'http://127.0.0.1:{cls.legacy_port}')
         (root / 'Caddyfile').write_text(caddy)
         env = os.environ.copy()
         env['HTTPS_HOSTNAME'] = cls.host
+        env['XDG_DATA_HOME'] = str(root / 'data')
         process = subprocess.Popen([os.environ['CADDY_BIN'], 'run', '--config', str(root / 'Caddyfile'),
                                     '--adapter', 'caddyfile'], env=env,
                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         cls.addClassCleanup(cls.stop, process)
+        root_ca = root / 'data/caddy/pki/authorities/local/root.crt'
         for selected_port in (cls.local_port, cls.private_port, cls.edge_port):
             deadline = time.monotonic() + 10
             while True:
                 try:
-                    with socket.create_connection(('127.0.0.1', selected_port), timeout=0.2):
-                        break
-                except OSError:
+                    with socket.create_connection(('127.0.0.1', selected_port), timeout=0.5) as connection:
+                        if selected_port == cls.edge_port:
+                            cls.tls = ssl.create_default_context(cafile=str(root_ca))
+                            with cls.tls.wrap_socket(connection, server_hostname='127.0.0.1'):
+                                pass
+                    break
+                except OSError as error:
                     if time.monotonic() > deadline:
-                        raise RuntimeError('Proxy did not start')
+                        raise RuntimeError('Proxy did not start') from error
                     time.sleep(0.1)
 
     @staticmethod
@@ -114,11 +122,14 @@ class ProxyRuntimeTests(unittest.TestCase):
             process.wait(timeout=10)
 
     def request(self, selected_port, method, path, body=None, headers=None):
-        connection = http.client.HTTPConnection('127.0.0.1', selected_port, timeout=10)
+        if selected_port == self.edge_port:
+            connection = http.client.HTTPSConnection('127.0.0.1', selected_port, timeout=10, context=self.tls)
+        else:
+            connection = http.client.HTTPConnection('127.0.0.1', selected_port, timeout=10)
         self.addCleanup(connection.close)
         connection.request(method, path, body=body, headers=headers or {})
         response = connection.getresponse()
-        return response.status, dict(response.getheaders()), response.read()
+        return response.status, response.headers, response.read()
 
     def test_methods_bodies_queries_and_sanitized_headers(self):
         for method in ('POST', 'PUT', 'PATCH'):
@@ -167,6 +178,9 @@ class ProxyRuntimeTests(unittest.TestCase):
             self.assertEqual(headers['Content-Type'], 'application/problem+json')
             self.assertEqual(headers['Retry-After'], '60')
             self.assertEqual(headers['Cache-Control'], 'no-store')
+            self.assertEqual(headers['X-Content-Type-Options'], 'nosniff')
+            self.assertIsNone(headers['Content-Security-Policy'])
+            self.assertEqual(headers.get_all('Strict-Transport-Security'), ['max-age=86400'])
             problem = json.loads(body)
             self.assertEqual(problem['status'], status)
             self.assertEqual(problem['type'], 'about:blank')
@@ -183,6 +197,25 @@ class ProxyRuntimeTests(unittest.TestCase):
     def test_legacy_ip_redirect_preserves_uri(self):
         status, headers, _ = self.request(self.legacy_port, 'POST', '/api/test?a=%2F', b'keep-body')
         self.assertEqual((status, headers['Location']), (308, f'https://{self.host}/api/test?a=%2F'))
+        self.assertIsNone(headers['Strict-Transport-Security'])
+
+    def test_portal_and_api_security_headers(self):
+        for path in ('/', '/tickets/123', '/api/echo'):
+            for selected_port in (self.edge_port, self.local_port):
+                with self.subTest(path=path, port=selected_port):
+                    status, headers, _ = self.request(selected_port, 'GET', path)
+                    self.assertEqual(status, 200)
+                    self.assertIn('nosniff', headers.get_all('X-Content-Type-Options', []))
+                    self.assertEqual(headers['X-Frame-Options'], 'DENY')
+                    self.assertEqual(headers['Referrer-Policy'], 'strict-origin-when-cross-origin')
+                    expected_hsts = ['max-age=86400'] if selected_port == self.edge_port else []
+                    self.assertEqual(headers.get_all('Strict-Transport-Security', []), expected_hsts)
+                    policies = headers.get_all('Content-Security-Policy', [])
+                    self.assertEqual(len(policies), 1)
+                    if path.startswith('/api/'):
+                        self.assertEqual(policies[0], "default-src 'none'")
+                    else:
+                        self.assertIn("frame-ancestors 'none'", policies[0])
 
     def test_body_limit_and_attachment_download(self):
         # Check Nginx's rejection at headers, without sending 55 MiB through Go's
