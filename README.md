@@ -24,7 +24,8 @@ DA2/
 ## Arranque aislado de QA y G1
 
 Para probar el sistema completo sin M1/Core reales, usar **`compose/qa`**. Requiere
-Git, Docker con contenedores Linux y Compose **2.17 o superior** con BuildKit.
+Git, Docker con contenedores **Linux AMD64 (`linux/amd64`)** y Compose **2.17 o superior**
+con BuildKit. El build actual del Frontend usa esbuild para `linux-x64`.
 Java, Maven, Node, certificados y broker se preparan en contenedores. La primera
 compilación necesita Internet para descargar imágenes y dependencias; los servicios
 Backend, broker, base y Core simulado se ejecutan luego en una red Docker `internal`,
@@ -61,21 +62,36 @@ o PowerShell en lugar del paso manual. Escribe los valores directamente al archi
 docker run --rm --network none --mount "type=bind,source=$PWD,target=/qa" --workdir /qa --entrypoint bash eclipse-temurin:21-jdk-noble@sha256:06c1f157dacf6b68198bd9a4186dd4c34ef24e65d7bbbe2a0cf8e62571ad38c9 /qa/prepare-env.sh
 ```
 
-El preparador se niega a sobrescribir un `.env` existente. Se pueden editar los
-puertos `QA_*_PORT` antes del arranque. Las contraseñas no se imprimen; evitar
-publicar `docker compose config`, `docker inspect` o volcados del entorno, que
-pueden contenerlas. `.env` está ignorado por Git y excluido del contexto de build.
+El preparador se niega a sobrescribir un `.env` existente. Antes del arranque debe
+existir `compose/qa/.env` completo. Usar una terminal sin variables de `.env.example`
+exportadas ni ajustes `COMPOSE_*` heredados. Los valores exportados tienen prioridad.
+Las contraseñas no se imprimen. Evitar publicar `docker compose config`,
+`docker inspect` o volcados del entorno, que pueden contenerlas. `.env` está
+ignorado por Git y excluido del contexto de build.
+
+Desde `compose/qa`, generar un identificador nuevo para cada ensayo G1 y conservarlo
+en la misma terminal hasta la limpieza.
+
+```bash
+G1_RUN_ID="$(date +%s)-$$-$RANDOM"
+```
+
+En PowerShell, usar `$G1_RUN_ID = [guid]::NewGuid().ToString('N')`.
+El nombre `m2-qa-g1-$G1_RUN_ID` aísla los contenedores, redes y volúmenes del ensayo.
+Los puertos del host también deben estar libres. Si `18081`, `18080` o `18090` están
+ocupados, elegir otros con `QA_FRONTEND_PORT`, `QA_BACKEND_PORT` y `QA_CORE_PORT`
+en `.env` y usar esos valores al comprobar los accesos.
 
 Con la configuración completa, **un único comando** construye y levanta todo:
 
 ```bash
-docker compose up --build --wait --wait-timeout 600
+docker compose -p "m2-qa-g1-$G1_RUN_ID" --env-file .env -f compose.yml up --build --wait --wait-timeout 600
 ```
 
-Compose rechaza variables obligatorias ausentes o vacías indicando su nombre. El comando
-espera PostgreSQL, RabbitMQ con TLS, Core simulado, Backend con migraciones y
-Frontend saludables. `--wait-timeout` limita la espera de salud, no la compilación:
-medir desde la ejecución del comando hasta su terminación para comprobar los 15 minutos.
+Compose exige el archivo `.env` y rechaza variables obligatorias ausentes o vacías
+indicando su nombre. El comando espera PostgreSQL, RabbitMQ con TLS, Core simulado,
+Backend con migraciones y Frontend saludables. `--wait-timeout` limita la espera de
+salud. Para comprobar los 15 minutos, medir el comando completo desde que se ejecuta.
 Para una medición en frío, preparar `.env` manualmente en un entorno sin imágenes,
 caché de build ni volúmenes previos de QA. El generador opcional ya descarga o
 reutiliza la imagen base de Java.
@@ -94,15 +110,20 @@ Ingresar en el Frontend con `citizen@example.test`, `agent@example.test`,
 `MOCK_ADMIN_PASSWORD`, respectivamente. Son identidades locales existentes; no
 son cuentas M1. El catálogo y los roles se inicializan con las migraciones y el perfil `dev`.
 
-Comprobación funcional repetible, desde `compose/qa` y sin Java instalado en el host:
+Consultar el estado y ejecutar la comprobación funcional desde `compose/qa`, sin
+Java instalado en el host:
 
 ```bash
-docker compose exec -T core-mock java --class-path "/core/BOOT-INF/lib/*" /core/VerifyG1.java
+docker compose -p "m2-qa-g1-$G1_RUN_ID" --env-file .env -f compose.yml ps --all
+docker compose -p "m2-qa-g1-$G1_RUN_ID" --env-file .env -f compose.yml exec -T core-mock java --class-path "/core/BOOT-INF/lib/*" /core/VerifyG1.java
 ```
 
-Debe finalizar con JSON `status: PASS`: comprueba Frontend/API, login MOCK ciudadano,
-agente y administrador. Prepara mediante la API administrativa un tipo sintético
-`QA_G1_EXTERNAL_ANONYMOUS`, sin cambiar los tipos existentes (el catálogo inicial
+`certificates` debe terminar con código 0 y los otros cinco servicios deben estar
+`healthy`.
+
+El verificador debe finalizar con JSON `status: PASS`. Comprueba Frontend/API y
+login MOCK ciudadano, agente y administrador. Prepara mediante la API administrativa
+un tipo sintético `QA_G1_EXTERNAL_ANONYMOUS`, sin cambiar los tipos existentes (el catálogo inicial
 no habilita anónimos), y su formulario de una pregunta. Comprueba creación anónima,
 revisión, derivación externa y publicación Outbox por
 AMQPS, recepción/validación en Core simulado, envío de `updateTicketStatus/STARTED`
@@ -124,7 +145,7 @@ Estas selecciones no se heredan del shell ni del `.env` productivo.
 El inicializador genera una CA descartable, certificado de servidor con SAN
 `rabbitmq` y truststore Java. Backend y Core simulado verifican certificado y hostname;
 no usan trust-all. La CA privada se elimina al terminar el inicializador. Las claves
-runtime, certificados, datos y adjuntos permanecen en volúmenes del proyecto **`m2-qa`**,
+runtime, certificados, datos y adjuntos permanecen en los volúmenes del ensayo,
 separados de desarrollo y Lightsail. No hay puertos de PostgreSQL ni RabbitMQ publicados.
 
 El Core simulado reutiliza los clientes AMQP/Jackson y los schemas `v1.78` de la
@@ -135,12 +156,23 @@ endpoints del Core real. Usa una cola local `q.qa.rejected` para diagnóstico; n
 implementa el catálogo, permisos, cadena completa de reintentos ni API DLQ del Core.
 G1 y este recorrido no acreditan por sí solos todas las pruebas de resiliencia.
 
-### INT-04: caída y recuperación de RabbitMQ local
+### Limpieza del ensayo G1
 
-Con el mismo entorno QA saludable (`docker compose up -d --build --wait`) y Python 3
-en el host, ejecutar desde `compose/qa`:
+Desde `compose/qa`, comprobar que `G1_RUN_ID` conserva el valor usado al arrancar y
+que el `ps --all` anterior lista los contenedores del ensayo descartable. Luego
+eliminar sus contenedores, redes y volúmenes con el mismo nombre de proyecto.
 
 ```bash
+docker compose -p "m2-qa-g1-$G1_RUN_ID" --env-file .env -f compose.yml down --volumes
+```
+
+### INT-04: caída y recuperación de RabbitMQ local
+
+INT-04 usa el proyecto fijo **`m2-qa`**. Desde `compose/qa`, con `.env` preparado,
+puertos libres y Python 3 en el host, arrancar ese proyecto y ejecutar la demo:
+
+```bash
+docker compose -p m2-qa --env-file .env -f compose.yml up -d --build --wait
 python demo-int04.py --tickets 3
 ```
 
@@ -173,17 +205,14 @@ caída de transporte. El Core simulado también pausa cinco segundos antes de
 reencolar por fallas de almacenamiento, evitando un ciclo de reentregas inmediato.
 No modificar las variables de publicación ni usar este script en otro Compose.
 
-Para ver la salud de todos los servicios: `docker compose ps -a` (el inicializador
-`certificates` debe terminar con código 0; los cinco servicios restantes deben estar
-`healthy`). Para detener sin borrar datos: `docker compose down`.
-Para volver a levantarlos conservando datos y claves: `docker compose up --wait --wait-timeout 600`.
-Para reiniciar un servicio sin reconstruir: `docker compose restart <servicio>` y
-comprobar su salud con `docker compose ps`. Para volver a probar desde
-cero, revisar que se está en `compose/qa` y ejecutar `docker compose down --volumes`:
-**borra únicamente los datos descartables de ese proyecto QA**. No cambiar passwords
-de PostgreSQL/RabbitMQ/truststore con volúmenes existentes; restaurarlas o recrear ese
-entorno descartable. Los certificados vencen en 30 días. Nunca usar estos archivos
-como configuración de `compose.deploy.yml` ni copiarlos a Lightsail.
+Para consultar la salud de INT-04 o detenerlo conservando sus datos, usar el mismo
+prefijo `docker compose -p m2-qa --env-file .env -f compose.yml` con `ps --all` o
+`down`. Con ese mismo prefijo, usar `up --wait --wait-timeout 600` para volver a
+levantarlo o `restart <servicio>` para reiniciar un servicio. Usar `down --volumes`
+sólo si `docker compose ls --all` confirma que el `m2-qa` descartable usa el
+`compose.yml` de esta copia. Las contraseñas de PostgreSQL, RabbitMQ y el truststore deben
+conservarse mientras se reutilicen los volúmenes. Los certificados vencen en 30 días.
+Nunca usar estos archivos como configuración de `compose.deploy.yml` ni copiarlos a Lightsail.
 
 ## Configuración local
 
