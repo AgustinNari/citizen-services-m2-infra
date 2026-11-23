@@ -67,13 +67,13 @@ class ProxyRuntimeTests(unittest.TestCase):
         threading.Thread(target=cls.backend.serve_forever, daemon=True).start()
         cls.local_port, cls.private_port, cls.edge_port, cls.legacy_port = [port() for _ in range(4)]
         cls.host = cls.HOSTNAME
-        config = Path(os.environ['FRONTEND_NGINX_CONFIG']).read_text()
+        config = Path(os.environ['FRONTEND_NGINX_CONFIG']).read_text(encoding='utf-8')
         config = config.replace('8082', str(cls.private_port))
         config = config.replace('listen 80;', f'listen 127.0.0.1:{cls.local_port};')
         config = config.replace(f'listen {cls.private_port};', f'listen 127.0.0.1:{cls.private_port};')
         config = config.replace('http://backend:8080', f'http://127.0.0.1:{cls.backend.server_port}')
         config = config.replace('/usr/share/nginx/html', (root / 'html').as_posix())
-        (root / 'nginx.conf').write_text('worker_processes 1;\nevents {}\nhttp {\n' + config + '\n}')
+        (root / 'nginx.conf').write_text('worker_processes 1;\nevents {}\nhttp {\n' + config + '\n}', encoding='utf-8')
         prefix = root.as_posix() + '/'
         check = subprocess.run([os.environ['NGINX_BIN'], '-p', prefix, '-c', 'nginx.conf', '-t'],
                                capture_output=True, text=True)
@@ -164,8 +164,16 @@ class ProxyRuntimeTests(unittest.TestCase):
             status, headers, body = self.request(self.edge_port, 'POST', '/api/tracking/access', b'{}', {
                 'Content-Type': 'application/json', 'X-Forwarded-For': forged})
             self.assertEqual(status, 429)
+            self.assertEqual(headers['Content-Type'], 'application/problem+json')
             self.assertEqual(headers['Retry-After'], '60')
-            self.assertEqual(json.loads(body)['code'], 'TOO_MANY_ATTEMPTS')
+            self.assertEqual(headers['Cache-Control'], 'no-store')
+            problem = json.loads(body)
+            self.assertEqual(problem['status'], status)
+            self.assertEqual(problem['type'], 'about:blank')
+            self.assertEqual(problem['title'], 'Too Many Requests')
+            self.assertEqual(problem['code'], 'TOO_MANY_ATTEMPTS')
+            self.assertEqual(problem['detail'], 'Demasiados intentos. Esperá un minuto y volvé a intentar.')
+            self.assertEqual(problem['message'], problem['detail'])
 
     def test_api_redirect_and_react_route(self):
         status, headers, _ = self.request(self.edge_port, 'POST', '/api?a=%2F&b=1', b'keep-body')
